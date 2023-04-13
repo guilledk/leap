@@ -16,24 +16,93 @@ namespace eosio {
         debug_eos_vm::debug_instr_map
     >;
 
+    static std::map<fc::sha256, fc::sha256> substitutions;
+    static std::map<uint64_t, fc::sha256> substitutions_by_name;
+    static std::map<fc::sha256, std::vector<uint8_t>> codes;
+    static std::map<fc::sha256, debug_contract::debugging_module<debug_contract_backend>> cached_modules;
+
+    static debug_contract::debugging_module<debug_contract_backend>& get_module(const eosio::chain::digest_type& code_hash) {
+        if (auto it = cached_modules.find(code_hash); it != cached_modules.end())
+           return it->second;
+
+        if (auto it = codes.find(code_hash); it != codes.end()) {
+           auto dwarf_info =
+               dwarf::get_info_from_wasm({(const char*)it->second.data(), it->second.size()});
+           auto size =
+               dwarf::wasm_exclude_custom({(const char*)it->second.data(), it->second.size()})
+                   .remaining();
+           try
+           {
+              eosio::vm::wasm_code_ptr code(it->second.data(), size);
+              auto bkend = std::make_unique<debug_contract_backend>(code, size, nullptr);
+              eosio::chain::eos_vm_host_functions_t::resolve(bkend->get_module());
+              auto reg = debug_eos_vm::enable_debug(it->second, *bkend, dwarf_info, "apply");
+              return cached_modules[code_hash] =
+                         debug_contract::debugging_module<debug_contract_backend>{std::move(bkend), std::move(reg)};
+           }
+           catch (eosio::vm::exception& e)
+           {
+              FC_THROW_EXCEPTION(eosio::chain::wasm_execution_error,
+                                 "Error building eos-vm interp: ${e}", ("e", e.what()));
+           }
+        }
+        throw std::runtime_error{"missing code for substituted module"};
+    }  // get_module
+
+    static void perform_call(fc::sha256 hsum, eosio::chain::apply_context& context) {
+            auto& module = *get_module(hsum).module;
+            module.set_wasm_allocator(&context.control.get_wasm_allocator());
+            eosio::chain::webassembly::interface iface(context);
+            module.initialize(&iface);
+            module.call(iface, "env", "apply", context.get_receiver().to_uint64_t(),
+                        context.get_action().account.to_uint64_t(),
+                        context.get_action().name.to_uint64_t());
+    }
+
+    static bool substitute_apply(const fc::sha256& code_hash,
+                          uint8_t vm_type,
+                          uint8_t vm_version,
+                          eosio::chain::apply_context& context)
+    {
+       if (vm_type || vm_version)
+          return false;
+
+       // match by hash
+       if (auto it = substitutions.find(code_hash); it != substitutions.end())
+       {
+          perform_call(it->second, context);
+          return true;
+       }
+
+       // match by name
+       auto it = substitutions_by_name.find(context.get_receiver().to_uint64_t());
+       if (it != substitutions_by_name.end())
+       {
+          perform_call(it->second, context);
+          return true;
+       }
+
+       // no matches for this call
+       return false;
+    }
+
     struct subst_plugin_impl : std::enable_shared_from_this<subst_plugin_impl> {
-        debug_contract::substitution_cache<debug_contract_backend> cache;
         fc::http_client httpc;
 
         fc::sha256 store_code(std::vector<uint8_t> new_code) {
             auto new_hash = fc::sha256::hash((const char*)new_code.data(), new_code.size());
-            cache.codes[new_hash] = std::move(new_code);
+            codes[new_hash] = std::move(new_code);
             return new_hash;
         }
 
         void subst(const fc::sha256 old_hash, std::vector<uint8_t> new_code) {
             fc::sha256 new_hash = store_code(new_code);
-            cache.substitutions[old_hash] = new_hash;
+            substitutions[old_hash] = new_hash;
         }
 
         void subst(const eosio::name account_name, std::vector<uint8_t> new_code) {
             fc::sha256 new_hash = store_code(new_code);
-            cache.substitutions_by_name[account_name.to_uint64_t()] = new_hash;
+            substitutions_by_name[account_name.to_uint64_t()] = new_hash;
         }
 
         void subst(const std::string& subst_info, std::vector<uint8_t> new_code) {
@@ -170,22 +239,22 @@ namespace eosio {
             // print susbtitution maps for debug
             ilog("Loaded substitutions:");
             ilog("By hash: ");
-            for (auto it = my->cache.substitutions.begin();
-                it != my->cache.substitutions.end(); it++) {
+            for (auto it = substitutions.begin();
+                it != substitutions.end(); it++) {
                 auto key = it->first;
                 auto new_hash = it->second;
-                auto wasm_size = my->cache.codes[new_hash].size();
+                auto wasm_size = codes[new_hash].size();
                 ilog(
                     "${k} -> ${new_hash} of size ${size}",
                     ("k", key)("new_hash", new_hash)("size", wasm_size)
                 );
             }
             ilog("By name: ");
-            for (auto it = my->cache.substitutions_by_name.begin();
-                it != my->cache.substitutions_by_name.end(); it++) {
+            for (auto it = substitutions_by_name.begin();
+                it != substitutions_by_name.end(); it++) {
                 auto key = eosio::name(it->first);
                 auto new_hash = it->second;
-                auto wasm_size = my->cache.codes[new_hash].size();
+                auto wasm_size = codes[new_hash].size();
                 ilog(
                     "${k} -> ${new_hash} of size ${size}",
                     ("k", key)("new_hash", new_hash)("size", wasm_size)
@@ -193,7 +262,7 @@ namespace eosio {
             }
 
             auto& iface = control.get_wasm_interface();
-            iface.substitute_apply = my->cache.substitute_apply;
+            iface.substitute_apply = substitute_apply;
         }
         FC_LOG_AND_RETHROW()
     }  // subst_plugin::plugin_initialize

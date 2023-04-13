@@ -1,12 +1,11 @@
 #pragma once
 
-#include <appbase/application.hpp>
-
 #include <boost/beast/http.hpp>
 #include <boost/filesystem.hpp>
 #include <boost/algorithm/string.hpp>
 
 #include <debug_eos_vm/debug_contract.hpp>
+#include <debug_eos_vm/debug_eos_vm.hpp>
 
 #include <fc/io/json.hpp>
 #include <fc/network/url.hpp>
