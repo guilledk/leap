@@ -17,7 +17,8 @@ namespace eosio {
     >;
 
     static std::map<fc::sha256, fc::sha256> substitutions;
-    static std::map<uint64_t, fc::sha256> substitutions_by_name;
+    static std::map<fc::sha256, uint32_t> sub_from;
+
     static std::map<fc::sha256, std::vector<uint8_t>> codes;
     static std::map<fc::sha256, debug_contract::debugging_module<debug_contract_backend>> cached_modules;
 
@@ -67,19 +68,34 @@ namespace eosio {
        if (vm_type || vm_version)
           return false;
 
-       // match by hash
-       if (auto it = substitutions.find(code_hash); it != substitutions.end())
-       {
-          perform_call(it->second, context);
-          return true;
-       }
+       auto block_num = context.control.pending_block_num();
 
        // match by name
-       auto it = substitutions_by_name.find(context.get_receiver().to_uint64_t());
-       if (it != substitutions_by_name.end())
-       {
-          perform_call(it->second, context);
-          return true;
+       auto name_hash = fc::sha256::hash(context.get_receiver().to_string());
+       auto it = substitutions.find(name_hash);
+       if (it != substitutions.end()) {
+          if (auto bnum_it = sub_from.find(name_hash); bnum_it != sub_from.end()) {
+              if (block_num >= bnum_it->second) {
+                  perform_call(it->second, context);
+                  return true;
+              }
+          } else {
+              perform_call(it->second, context);
+              return true;
+          }
+       }
+
+       // match by hash
+       if (auto it = substitutions.find(code_hash); it != substitutions.end()) {
+          if (auto bnum_it = sub_from.find(code_hash); bnum_it != sub_from.end()) {
+              if (block_num >= bnum_it->second) {
+                  perform_call(it->second, context);
+                  return true;
+              }
+          } else {
+              perform_call(it->second, context);
+              return true;
+          }
        }
 
        // no matches for this call
@@ -95,25 +111,41 @@ namespace eosio {
             return new_hash;
         }
 
-        void subst(const fc::sha256 old_hash, std::vector<uint8_t> new_code) {
-            fc::sha256 new_hash = store_code(new_code);
+        void subst(const fc::sha256 old_hash, std::vector<uint8_t> new_code, uint32_t from_block) {
+            auto new_hash = store_code(new_code);
             substitutions[old_hash] = new_hash;
+            if (from_block > 0)
+                sub_from[old_hash] = from_block;
         }
 
-        void subst(const eosio::name account_name, std::vector<uint8_t> new_code) {
-            fc::sha256 new_hash = store_code(new_code);
-            substitutions_by_name[account_name.to_uint64_t()] = new_hash;
+        void subst(const eosio::name account_name, std::vector<uint8_t> new_code, uint32_t from_block) {
+            auto new_hash = store_code(new_code);
+            auto acc_hash = fc::sha256::hash(account_name.to_string());
+            substitutions[acc_hash] = new_hash;
+            if (from_block > 0)
+                sub_from[acc_hash] = from_block;
         }
 
-        void subst(const std::string& subst_info, std::vector<uint8_t> new_code) {
+        void subst(std::string& subst_info, std::vector<uint8_t> new_code) {
+            std::vector<std::string> v;
+            boost::split(v, subst_info, boost::is_any_of("-"));
+
+            auto from_block = 0;
+
+            if (v.size() == 2) {
+                subst_info = v[0];
+                from_block = std::stoul(v[1]);
+            }
+
             // update substitution maps
             if (subst_info.size() < 16) {
                 // if smaller than 16 char assume its an account name
-                subst(eosio::name(subst_info), new_code);
+                subst(eosio::name(subst_info), new_code, from_block);
             } else {
                 // if not assume its a code hash
-                subst(fc::sha256(subst_info), new_code);
+                subst(fc::sha256(subst_info), new_code, from_block);
             }
+
         }
 
         void load_remote_manifest(std::string chain_id, fc::url manifest_url) {
@@ -143,7 +175,9 @@ namespace eosio {
                     ilog("Downloading wasm from ${wurl}...", ("wurl", wasm_url));
                     std::vector<uint8_t> new_code = httpc.get_sync_raw(wasm_url);
                     ilog("Done.");
-                    subst(subst_entry.key(), new_code);
+
+                    std::string subst_info = subst_entry.key();
+                    subst(subst_info, new_code);
                 }
             } else {
                 ilog("Manifest found but chain id not present.");
@@ -200,7 +234,7 @@ namespace eosio {
                     auto new_code_path = v[1];
 
                     std::vector<uint8_t> new_code = eosio::vm::read_wasm(new_code_path);
-                    my->subst(eosio::name(account_name), new_code);
+                    my->subst(account_name, new_code);
                 }
             }
             if (options.count("subst-by-hash")) {
@@ -220,7 +254,7 @@ namespace eosio {
                     auto new_code_path = v[1];
 
                     std::vector<uint8_t> new_code = eosio::vm::read_wasm(new_code_path);
-                    my->subst(fc::sha256(contract_hash), new_code);
+                    my->subst(contract_hash, new_code);
                 }
             }
             if (options.count("subst-manifest")) {
@@ -238,27 +272,23 @@ namespace eosio {
 
             // print susbtitution maps for debug
             ilog("Loaded substitutions:");
-            ilog("By hash: ");
             for (auto it = substitutions.begin();
                 it != substitutions.end(); it++) {
                 auto key = it->first;
                 auto new_hash = it->second;
                 auto wasm_size = codes[new_hash].size();
-                ilog(
-                    "${k} -> ${new_hash} of size ${size}",
-                    ("k", key)("new_hash", new_hash)("size", wasm_size)
-                );
-            }
-            ilog("By name: ");
-            for (auto it = substitutions_by_name.begin();
-                it != substitutions_by_name.end(); it++) {
-                auto key = eosio::name(it->first);
-                auto new_hash = it->second;
-                auto wasm_size = codes[new_hash].size();
-                ilog(
-                    "${k} -> ${new_hash} of size ${size}",
-                    ("k", key)("new_hash", new_hash)("size", wasm_size)
-                );
+                auto bnum_it = sub_from.find(key);
+                if (bnum_it != sub_from.end()) {
+                    ilog(
+                        "${k} -> ${new_hash} of size ${size}",
+                        ("k", key)("new_hash", new_hash)("size", wasm_size)
+                    );
+                } else {
+                    ilog(
+                        "${k} -> ${new_hash} of size ${size} from block ${from}",
+                        ("k", key)("new_hash", new_hash)("size", wasm_size)("from", bnum_it->second)
+                    );
+                }
             }
 
             auto& iface = control.get_wasm_interface();

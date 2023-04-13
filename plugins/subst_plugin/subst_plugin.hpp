@@ -1,5 +1,7 @@
 #pragma once
 
+#include <string>
+
 #include <boost/beast/http.hpp>
 #include <boost/filesystem.hpp>
 #include <boost/algorithm/string.hpp>
