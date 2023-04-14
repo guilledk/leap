@@ -4,42 +4,30 @@ namespace eosio {
 
     static auto _subst_plugin = application::register_plugin<subst_plugin>();
 
-    struct debug_vm_options {
-        static constexpr std::uint32_t max_call_depth = 1024;
-    };
-
-    DEBUG_PARSE_CODE_SECTION(eosio::chain::eos_vm_host_functions_t, debug_vm_options)
-    using debug_contract_backend = eosio::vm::backend<
+    using contract_backend = eosio::vm::backend<
         eosio::chain::eos_vm_host_functions_t,
-        eosio::vm::jit_profile,
-        debug_vm_options,
-        debug_eos_vm::debug_instr_map
+        eosio::vm::jit_profile
     >;
+
+    using wasm_module = std::unique_ptr<contract_backend>;
 
     static std::map<fc::sha256, fc::sha256> substitutions;
     static std::map<fc::sha256, uint32_t> sub_from;
 
     static std::map<fc::sha256, std::vector<uint8_t>> codes;
-    static std::map<fc::sha256, debug_contract::debugging_module<debug_contract_backend>> cached_modules;
+    static std::map<fc::sha256, wasm_module> cached_modules;
 
-    static debug_contract::debugging_module<debug_contract_backend>& get_module(const eosio::chain::digest_type& code_hash) {
+    static wasm_module& get_module(const eosio::chain::digest_type& code_hash) {
         if (auto it = cached_modules.find(code_hash); it != cached_modules.end())
            return it->second;
 
         if (auto it = codes.find(code_hash); it != codes.end()) {
-           auto dwarf_info =
-               dwarf::get_info_from_wasm({(const char*)it->second.data(), it->second.size()});
-           auto size =
-               dwarf::wasm_exclude_custom({(const char*)it->second.data(), it->second.size()})
-                   .remaining();
            try
            {
-              eosio::vm::wasm_code_ptr code(it->second.data(), size);
-              auto bkend = std::make_unique<debug_contract_backend>(code, size, nullptr);
+              eosio::vm::wasm_code_ptr code(it->second.data(), it->second.size());
+              auto bkend = std::make_unique<contract_backend>(code, it->second.size(), nullptr);
               eosio::chain::eos_vm_host_functions_t::resolve(bkend->get_module());
-              auto reg = debug_eos_vm::enable_debug(it->second, *bkend, dwarf_info, "apply");
-              return cached_modules[code_hash] =
-                         debug_contract::debugging_module<debug_contract_backend>{std::move(bkend), std::move(reg)};
+              return cached_modules[code_hash] = std::move(bkend);
            }
            catch (eosio::vm::exception& e)
            {
@@ -51,7 +39,7 @@ namespace eosio {
     }  // get_module
 
     static void perform_call(fc::sha256 hsum, eosio::chain::apply_context& context) {
-            auto& module = *get_module(hsum).module;
+            auto& module = *get_module(hsum);
             module.set_wasm_allocator(&context.control.get_wasm_allocator());
             eosio::chain::webassembly::interface iface(context);
             module.initialize(&iface);
@@ -278,7 +266,7 @@ namespace eosio {
                 auto new_hash = it->second;
                 auto wasm_size = codes[new_hash].size();
                 auto bnum_it = sub_from.find(key);
-                if (bnum_it != sub_from.end()) {
+                if (bnum_it == sub_from.end()) {
                     ilog(
                         "${k} -> ${new_hash} of size ${size}",
                         ("k", key)("new_hash", new_hash)("size", wasm_size)
