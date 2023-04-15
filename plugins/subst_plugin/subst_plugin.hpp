@@ -1,22 +1,30 @@
 #pragma once
 
+#include <chrono>
 #include <string>
 
 #include <boost/beast/http.hpp>
 #include <boost/filesystem.hpp>
 #include <boost/algorithm/string.hpp>
 
-#include <debug_eos_vm/debug_contract.hpp>
-#include <debug_eos_vm/debug_eos_vm.hpp>
-
 #include <fc/io/json.hpp>
 #include <fc/network/url.hpp>
 #include <fc/network/http/http_client.hpp>
 
 #include <eosio/chain/controller.hpp>
+#include <eosio/chain/code_object.hpp>
 #include <eosio/chain/application.hpp>
+#include <eosio/chain/wasm_interface.hpp>
 #include <eosio/chain/transaction_context.hpp>
+#include <eosio/chain/wasm_interface_private.hpp>
+
+#include <eosio/chain/webassembly/eos-vm-oc.hpp>
+#include <eosio/chain/webassembly/runtime_interface.hpp>
+
 #include <eosio/chain_plugin/chain_plugin.hpp>
+
+#define TEMPORARY_FAILURE chain::eosvmoc::code_cache_base::get_cd_failure::temporary
+#define PERMANENT_FAILURE chain::eosvmoc::code_cache_base::get_cd_failure::permanent
 
 namespace http = boost::beast::http;
 

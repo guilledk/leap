@@ -21,7 +21,9 @@ nodeos \
     --verbose-http-errors \
     --subst-by-name helloworld-3:debugworld.wasm \
     --data-dir=data \
-    >> "nodeos.log" 2>&1 &
+    --read-only-threads=0 \
+    --eos-vm-oc-enable \
+    > "nodeos.log" 2>&1 &
 
 sleep 5
 

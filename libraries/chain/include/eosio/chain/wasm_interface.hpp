@@ -70,7 +70,7 @@ namespace eosio { namespace chain {
          // then apply returns immediately.
          std::function<bool(
             const digest_type& code_hash, uint8_t vm_type, uint8_t vm_version, apply_context& context)> substitute_apply;
-      private:
+      // private:
          unique_ptr<struct wasm_interface_impl> my;
          vm_type vm;
    };
