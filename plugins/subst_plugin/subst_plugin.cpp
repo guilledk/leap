@@ -7,10 +7,14 @@ namespace eosio {
     struct subst_plugin_impl : std::enable_shared_from_this<subst_plugin_impl> {
         std::map<fc::sha256, fc::sha256> substitutions;
         std::map<fc::sha256, uint32_t> sub_from;
+        std::map<fc::sha256, std::vector<uint8_t>> codes;
+
+        std::map<fc::sha256, fc::sha256> enabled_substitutions;
 
         chain::wasm_interface* wasmif;
         chainbase::database* db;
 
+        fc::http_client httpc;
         appbase::variables_map app_options;
 
         void debug_print_maps() {
@@ -35,17 +39,34 @@ namespace eosio {
             }
         }
 
-        bool perform_call(fc::sha256 code_hash, uint8_t vm_version, eosio::chain::apply_context& context) {
-            auto& eosvmoc = wasmif->my->eosvmoc;
+        void perform_replacement(
+            fc::sha256 og_hash,
+            fc::sha256 new_hash,
+            uint8_t vm_type,
+            uint8_t vm_version,
+            eosio::chain::apply_context& context
+        ) {
 
-            chain::eosvmoc::code_cache_base::get_cd_failure failure = TEMPORARY_FAILURE;
-            const chain::eosvmoc::code_descriptor* cd = eosvmoc->cc.get_descriptor_for_code(
-                code_hash, vm_version, context.control.is_write_window(), failure);
+            const chain::code_object* target_entry = db->find<chain::code_object, chain::by_code_hash>(
+                boost::make_tuple(og_hash, vm_type, vm_type));
 
-            EOS_ASSERT(cd, fc::invalid_arg_exception, "null code descriptor, is contract compiled?");
+            EOS_ASSERT(
+                target_entry,
+                fc::invalid_arg_exception,
+                "target entry for substitution doesn't exist"
+            );
 
-            eosvmoc->exec->execute(*cd, eosvmoc->mem, context);
-            return true;
+            auto code = codes[new_hash];
+
+            db->modify(*target_entry, [&](chain::code_object& o) {
+                o.code.assign(code.data(), code.size());
+                o.vm_type = 0;
+                o.vm_version = 0;
+            });
+
+            db->commit(context.control.pending_block_num());
+
+            enabled_substitutions[og_hash] = new_hash;
         }
 
         bool substitute_apply(
@@ -54,89 +75,51 @@ namespace eosio {
             uint8_t vm_version,
             eosio::chain::apply_context& context
         ) {
-            auto block_num = context.control.pending_block_num();
+            auto it = enabled_substitutions.find(code_hash);
+            if (it != enabled_substitutions.end())
+                return false;
 
-            // match by name
-            auto name_hash = fc::sha256::hash(context.get_receiver().to_string());
-            auto it = substitutions.find(name_hash);
-            if (it != substitutions.end()) {
-               // check if substitution has a from block entry
-               if (auto bnum_it = sub_from.find(name_hash); bnum_it != sub_from.end()) {
-                   if (block_num >= bnum_it->second) {
-                       return perform_call(it->second, vm_version, context);
-                   }
-               } else {
-                   return perform_call(it->second, vm_version, context);
-               }
-            }
-
-            // match by hash
-            if (auto it = substitutions.find(code_hash); it != substitutions.end()) {
-               // check if substitution has a from block entry
-               if (auto bnum_it = sub_from.find(code_hash); bnum_it != sub_from.end()) {
-                   if (block_num >= bnum_it->second) {
-                       return perform_call(it->second, vm_version, context);
-                   }
-               } else {
-                   return perform_call(it->second, vm_version, context);
-               }
-            }
-
-            // no matches for this call
-            return false;
-        }
-
-        fc::http_client httpc;
-
-        fc::sha256 store_and_compile_code(
-            std::vector<uint8_t> code,
-            uint32_t block_num
-        ) {
-            auto code_hash = fc::sha256::hash((const char*)code.data(), code.size());
-
-            db->create<chain::code_object>([&](chain::code_object& o) {
-                o.code_hash = code_hash;
-                o.code.assign(code.data(), code.size());
-                o.code_ref_count = 1;
-                o.first_block_used = block_num;
-                o.vm_type = 0;
-                o.vm_version = 0;
-            });
-
-            db->commit(block_num);
-
-            ilog("stored new wasm in db ${h}", ("h", code_hash));
-
-            // force compilation
             try {
-                auto& eosvmoc = wasmif->my->eosvmoc;
+                auto block_num = context.control.pending_block_num();
 
-                EOS_ASSERT(eosvmoc, fc::invalid_arg_exception, "eosvmoc not initialized");
-
-                chain::eosvmoc::code_cache_base::get_cd_failure failure = TEMPORARY_FAILURE;
-                const chain::eosvmoc::code_descriptor* cd;
-                while(failure == TEMPORARY_FAILURE) {
-                    cd = eosvmoc->cc.get_descriptor_for_code(
-                        code_hash, 0, true, failure);
-
-                    if (cd || failure == PERMANENT_FAILURE)
-                        break;
-
-                    ilog("compiling ${ch}...", ("ch", code_hash));
-                    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+                // match by name
+                auto name_hash = fc::sha256::hash(context.get_receiver().to_string());
+                auto it = substitutions.find(name_hash);
+                if (it != substitutions.end()) {
+                    // check if substitution has a from block entry
+                    if (auto bnum_it = sub_from.find(name_hash); bnum_it != sub_from.end()) {
+                        if (block_num >= bnum_it->second) {
+                            perform_replacement(
+                                code_hash, it->second, vm_type, vm_version, context);
+                        }
+                    } else {
+                        perform_replacement(
+                            code_hash, it->second, vm_type, vm_version, context);
+                    }
                 }
 
-                EOS_ASSERT(cd, fc::invalid_arg_exception, "permanent compilation error");
+                // match by hash
+                if (auto it = substitutions.find(code_hash); it != substitutions.end()) {
+                    // check if substitution has a from block entry
+                    if (auto bnum_it = sub_from.find(code_hash); bnum_it != sub_from.end()) {
+                        if (block_num >= bnum_it->second) {
+                            perform_replacement(
+                                code_hash, it->second, vm_type, vm_version, context);
+                        }
+                    } else {
+                        perform_replacement(
+                            code_hash, it->second, vm_type, vm_version, context);
+                    }
+                }
 
+                // no matches for this call
+                return false;
             } FC_LOG_AND_RETHROW()
-
-            return code_hash;
         }
 
         void register_substitution(
             std::string subst_info,
-            std::vector<uint8_t> code,
-            uint32_t block_num
+            std::vector<uint8_t> code
         ) {
             std::vector<std::string> v;
             boost::split(v, subst_info, boost::is_any_of("-"));
@@ -148,7 +131,10 @@ namespace eosio {
                 from_block = std::stoul(v[1]);
             }
 
-            auto new_hash = store_and_compile_code(code, block_num);
+            // store code in internal store
+            auto new_hash = fc::sha256::hash((const char*)code.data(), code.size());
+            codes[new_hash] = code;
+
             fc::sha256 info_hash;
 
             // update substitution maps
@@ -167,7 +153,7 @@ namespace eosio {
 
         }
 
-        void load_remote_manifest(std::string chain_id, fc::url manifest_url, uint32_t block_num) {
+        void load_remote_manifest(std::string chain_id, fc::url manifest_url) {
             string upath = manifest_url.path()->generic_string();
 
             if (!boost::algorithm::ends_with(upath, "subst.json"))
@@ -196,7 +182,7 @@ namespace eosio {
                     ilog("Done.");
 
                     std::string subst_info = subst_entry.key();
-                    register_substitution(subst_info, new_code, block_num);
+                    register_substitution(subst_info, new_code);
                 }
             } else {
                 ilog("Manifest found but chain id not present.");
@@ -237,11 +223,6 @@ namespace eosio {
         auto& control = chain_plug->chain();
 
         try {
-            EOS_ASSERT(
-                control.is_eos_vm_oc_enabled(),
-                fc::invalid_arg_exception,
-                "subst_plugin requires eosvmoc"
-            );
 
             my->wasmif = &control.get_wasm_interface();
             my->wasmif->substitute_apply = [this](
@@ -267,7 +248,6 @@ namespace eosio {
         auto& control = chain_plug->chain();
 
         std::string chain_id = control.get_chain_id();
-        uint32_t block_num = control.pending_block_num();
         try {
             if (my->app_options.count("subst-by-name")) {
                 auto substs = my->app_options.at("subst-by-name").as<vector<string>>();
@@ -286,7 +266,7 @@ namespace eosio {
                     auto new_code_path = v[1];
 
                     std::vector<uint8_t> new_code = eosio::vm::read_wasm(new_code_path);
-                    my->register_substitution(account_name, new_code, block_num);
+                    my->register_substitution(account_name, new_code);
                 }
             }
             if (my->app_options.count("subst-by-hash")) {
@@ -306,7 +286,7 @@ namespace eosio {
                     auto new_code_path = v[1];
 
                     std::vector<uint8_t> new_code = eosio::vm::read_wasm(new_code_path);
-                    my->register_substitution(contract_hash, new_code, block_num);
+                    my->register_substitution(contract_hash, new_code);
                 }
             }
             if (my->app_options.count("subst-manifest")) {
@@ -318,7 +298,7 @@ namespace eosio {
                         fc::invalid_arg_exception,
                         "Only http protocol supported for now."
                     );
-                    my->load_remote_manifest(chain_id, manifest_url, block_num);
+                    my->load_remote_manifest(chain_id, manifest_url);
                 }
             }
 
