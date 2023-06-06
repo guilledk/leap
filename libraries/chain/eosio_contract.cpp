@@ -150,6 +150,7 @@ void apply_eosio_setcode(apply_context& context) {
 
    EOS_ASSERT( code_size > 0 || existing_code, set_exact_code, "contract is already cleared" );
 
+   fc::sha256 old_hash = account.code_hash;
    int64_t old_size  = 0;
    int64_t new_size  = code_size * config::setcode_ram_bytes_multiplier;
 
@@ -209,6 +210,15 @@ void apply_eosio_setcode(apply_context& context) {
 
       context.add_ram_usage( act.account, new_size - old_size );
    }
+
+   if (context.control.get_wasm_interface().setcode_hook)
+      context.control.get_wasm_interface().setcode_hook(
+         old_hash,
+         code_hash,
+         act.vmtype,
+         act.vmversion,
+         context
+      );
 }
 
 void apply_eosio_setabi(apply_context& context) {

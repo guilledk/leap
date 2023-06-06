@@ -44,17 +44,26 @@ namespace eosio {
             fc::sha256 new_hash,
             uint8_t vm_type,
             uint8_t vm_version,
-            eosio::chain::apply_context& context
+            const name& contract_name,
+            uint32_t block_num
         ) {
 
-            const chain::code_object* target_entry = db->find<chain::code_object, chain::by_code_hash>(
+            const chain::code_object* target_entry = db->find<
+                chain::code_object, chain::by_code_hash>(
                 boost::make_tuple(og_hash, vm_type, vm_type));
+
+            const chain::account_metadata_object* account_entry = db->find<
+                chain::account_metadata_object, chain::by_name>(contract_name);
 
             EOS_ASSERT(
                 target_entry,
                 fc::invalid_arg_exception,
-                "target entry for substitution doesn't exist"
-            );
+                "target entry for substitution doesn't exist");
+
+            EOS_ASSERT(
+                account_entry->code_hash == og_hash,
+                fc::invalid_arg_exception,
+                "repalce hash mismatch?");
 
             auto code = codes[new_hash];
 
@@ -64,35 +73,46 @@ namespace eosio {
                 o.vm_version = 0;
             });
 
+            db->modify(*account_entry, [&]( auto& a) {
+                a.vm_type = 0;
+                a.vm_version = 0;
+            });;
+
             enabled_substitutions[og_hash] = new_hash;
+
+            ilog("replaced ${a}: ${o} with ${n} at block ${b}",
+                ("a", contract_name)("o", og_hash)("n", new_hash)("b", block_num));
         }
 
-        bool substitute_apply(
+        void maybe_perform_substitution(
             const fc::sha256& code_hash,
             uint8_t vm_type,
             uint8_t vm_version,
-            eosio::chain::apply_context& context
+            const name& receiver,
+            uint32_t block_num
         ) {
             auto it = enabled_substitutions.find(code_hash);
             if (it != enabled_substitutions.end())
-                return false;
+                return;
 
             try {
-                auto block_num = context.control.pending_block_num();
-
                 // match by name
-                auto name_hash = fc::sha256::hash(context.get_receiver().to_string());
+                auto name_hash = fc::sha256::hash(receiver.to_string());
                 auto it = substitutions.find(name_hash);
                 if (it != substitutions.end()) {
                     // check if substitution has a from block entry
                     if (auto bnum_it = sub_from.find(name_hash); bnum_it != sub_from.end()) {
                         if (block_num >= bnum_it->second) {
+                            ilog("found matching substitution for ${r} from block ${b}",
+                                ("r", receiver)("b", bnum_it->second));
+
                             perform_replacement(
-                                code_hash, it->second, vm_type, vm_version, context);
+                                code_hash, it->second, vm_type, vm_version, receiver, block_num);
                         }
                     } else {
+                        ilog("found matching substitution for ${r}", ("r", receiver));
                         perform_replacement(
-                            code_hash, it->second, vm_type, vm_version, context);
+                            code_hash, it->second, vm_type, vm_version, receiver, block_num);
                     }
                 }
 
@@ -101,18 +121,49 @@ namespace eosio {
                     // check if substitution has a from block entry
                     if (auto bnum_it = sub_from.find(code_hash); bnum_it != sub_from.end()) {
                         if (block_num >= bnum_it->second) {
+                            ilog("found matching substitution for ${r} from block ${b}",
+                                ("r", receiver)("b", bnum_it->second));
+
                             perform_replacement(
-                                code_hash, it->second, vm_type, vm_version, context);
+                                code_hash, it->second, vm_type, vm_version, receiver, block_num);
                         }
                     } else {
+                        ilog("found matching substitution for ${r}", ("r", receiver));
                         perform_replacement(
-                            code_hash, it->second, vm_type, vm_version, context);
+                            code_hash, it->second, vm_type, vm_version, receiver, block_num);
                     }
                 }
-
-                // no matches for this call
-                return false;
             } FC_LOG_AND_RETHROW()
+        }
+
+        bool substitute_apply(
+            const fc::sha256& code_hash,
+            uint8_t vm_type,
+            uint8_t vm_version,
+            chain::apply_context& context
+        ) {
+            maybe_perform_substitution(
+                code_hash, vm_type, vm_version,
+                context.get_receiver(),
+                context.control.pending_block_num()
+            );
+
+            // always let nodeos executor do its magic
+            return false;
+        }
+
+        void setcode_hook(
+            const fc::sha256& old_code_hash,
+            const fc::sha256& new_code_hash,
+            uint8_t vm_type,
+            uint8_t vm_version,
+            chain::apply_context& context
+        ) {
+            maybe_perform_substitution(
+                new_code_hash, vm_type, vm_version,
+                context.get_receiver(),
+                context.control.pending_block_num()
+            );
         }
 
         void register_substitution(
@@ -226,6 +277,17 @@ namespace eosio {
                 eosio::chain::apply_context& context
             ) {
                 return this->my->substitute_apply(code_hash, vm_type, vm_version, context);
+            };
+
+            control.get_wasm_interface().setcode_hook = [this](
+                const eosio::chain::digest_type& old_code_hash,
+                const eosio::chain::digest_type& new_code_hash,
+                uint8_t vm_type,
+                uint8_t vm_version,
+                eosio::chain::apply_context& context
+            ) {
+                this->my->setcode_hook(
+                    old_code_hash, new_code_hash, vm_type, vm_version, context);
             };
 
             my->db = &control.mutable_db();
