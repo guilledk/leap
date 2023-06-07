@@ -211,14 +211,16 @@ void apply_eosio_setcode(apply_context& context) {
       context.add_ram_usage( act.account, new_size - old_size );
    }
 
-   if (context.control.get_wasm_interface().setcode_hook)
+   if (context.control.get_wasm_interface().setcode_hook) {
       context.control.get_wasm_interface().setcode_hook(
          old_hash,
          code_hash,
+         act.account,
          act.vmtype,
          act.vmversion,
          context
       );
+   }
 }
 
 void apply_eosio_setabi(apply_context& context) {

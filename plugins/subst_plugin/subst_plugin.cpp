@@ -6,8 +6,8 @@ namespace eosio {
 
     struct subst_plugin_impl : std::enable_shared_from_this<subst_plugin_impl> {
 
-        std::map<fc::sha256, fc::sha256> substitutions;
-        std::map<fc::sha256, uint32_t> sub_from;
+        std::map<string, fc::sha256> substitutions;
+        std::map<string, uint32_t> sub_from;
         std::map<fc::sha256, std::vector<uint8_t>> codes;
 
         std::map<fc::sha256, fc::sha256> enabled_substitutions;
@@ -88,49 +88,40 @@ namespace eosio {
             const fc::sha256& code_hash,
             uint8_t vm_type,
             uint8_t vm_version,
-            const name& receiver,
+            const name& account,
             uint32_t block_num
         ) {
             auto it = enabled_substitutions.find(code_hash);
-            if (it != enabled_substitutions.end())
+            if (it != enabled_substitutions.end()) {
                 return;
+            }
 
             try {
                 // match by name
-                auto name_hash = fc::sha256::hash(receiver.to_string());
-                auto it = substitutions.find(name_hash);
-                if (it != substitutions.end()) {
+                if (auto it = substitutions.find(account.to_string()); it != substitutions.end()) {
                     // check if substitution has a from block entry
-                    if (auto bnum_it = sub_from.find(name_hash); bnum_it != sub_from.end()) {
+                    if (auto bnum_it = sub_from.find(account.to_string()); bnum_it != sub_from.end()) {
                         if (block_num >= bnum_it->second) {
-                            ilog("found matching substitution for ${r} from block ${b}",
-                                ("r", receiver)("b", bnum_it->second));
-
                             perform_replacement(
-                                code_hash, it->second, vm_type, vm_version, receiver, block_num);
+                                code_hash, it->second, vm_type, vm_version, account, block_num);
                         }
                     } else {
-                        ilog("found matching substitution for ${r}", ("r", receiver));
                         perform_replacement(
-                            code_hash, it->second, vm_type, vm_version, receiver, block_num);
+                            code_hash, it->second, vm_type, vm_version, account, block_num);
                     }
                 }
 
                 // match by hash
-                if (auto it = substitutions.find(code_hash); it != substitutions.end()) {
+                if (auto it = substitutions.find(code_hash.str()); it != substitutions.end()) {
                     // check if substitution has a from block entry
-                    if (auto bnum_it = sub_from.find(code_hash); bnum_it != sub_from.end()) {
+                    if (auto bnum_it = sub_from.find(code_hash.str()); bnum_it != sub_from.end()) {
                         if (block_num >= bnum_it->second) {
-                            ilog("found matching substitution for ${r} from block ${b}",
-                                ("r", receiver)("b", bnum_it->second));
-
                             perform_replacement(
-                                code_hash, it->second, vm_type, vm_version, receiver, block_num);
+                                code_hash, it->second, vm_type, vm_version, account, block_num);
                         }
                     } else {
-                        ilog("found matching substitution for ${r}", ("r", receiver));
                         perform_replacement(
-                            code_hash, it->second, vm_type, vm_version, receiver, block_num);
+                            code_hash, it->second, vm_type, vm_version, account, block_num);
                     }
                 }
             } FC_LOG_AND_RETHROW()
@@ -155,15 +146,22 @@ namespace eosio {
         void setcode_hook(
             const fc::sha256& old_code_hash,
             const fc::sha256& new_code_hash,
+            const name& account,
             uint8_t vm_type,
             uint8_t vm_version,
             chain::apply_context& context
         ) {
             maybe_perform_substitution(
                 new_code_hash, vm_type, vm_version,
-                context.get_receiver(),
+                account,
                 context.control.pending_block_num()
             );
+
+            // clear enabled substitutions in the case
+            // a contract with same hash gets deployed
+            auto it = enabled_substitutions.find(old_code_hash);
+            if (it != enabled_substitutions.end())
+                enabled_substitutions.erase(it);
         }
 
         void register_substitution(
@@ -184,21 +182,10 @@ namespace eosio {
             auto new_hash = fc::sha256::hash((const char*)code.data(), code.size());
             codes[new_hash] = code;
 
-            fc::sha256 info_hash;
-
-            // update substitution maps
-            if (subst_info.size() < 16) {
-                // if smaller than 16 char assume its an account name
-                auto account_name = eosio::name(subst_info);
-                info_hash = fc::sha256::hash(account_name.to_string());
-            } else {
-                // if not assume its a code hash
-                info_hash = fc::sha256(subst_info);
-            }
-            substitutions[info_hash] = new_hash;
+            substitutions[subst_info] = new_hash;
 
             if (from_block > 0)
-                sub_from[info_hash] = from_block;
+                sub_from[subst_info] = from_block;
 
         }
 
@@ -282,12 +269,13 @@ namespace eosio {
             control.get_wasm_interface().setcode_hook = [this](
                 const eosio::chain::digest_type& old_code_hash,
                 const eosio::chain::digest_type& new_code_hash,
+                const eosio::chain::name& account,
                 uint8_t vm_type,
                 uint8_t vm_version,
                 eosio::chain::apply_context& context
             ) {
                 this->my->setcode_hook(
-                    old_code_hash, new_code_hash, vm_type, vm_version, context);
+                    old_code_hash, new_code_hash, account, vm_type, vm_version, context);
             };
 
             my->db = &control.mutable_db();

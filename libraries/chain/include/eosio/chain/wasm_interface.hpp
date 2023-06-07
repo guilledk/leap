@@ -74,6 +74,7 @@ namespace eosio { namespace chain {
          std::function<void(
             const digest_type& old_code_hash,
             const digest_type& new_code_hash,
+            const name& account,
             uint8_t vm_type,
             uint8_t vm_version,
             apply_context& context
