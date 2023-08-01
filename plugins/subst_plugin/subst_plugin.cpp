@@ -227,7 +227,7 @@ namespace eosio {
             "subst-manifest", bpo::value<vector<string>>()->composing(),
             "url. load susbtitution information from a remote json file.");
         options(
-            "pre-enable-evm-instrinsics", bpo::value<bool>()->default_value(false),
+            "pre-enable-evm-intrinsics", bpo::value<bool>()->default_value(false),
             "enable GET_BLOCK_NUM and CRYPTO_PRIMITIVES protocol feature even if they are disabled"
             "on chain");
     }
