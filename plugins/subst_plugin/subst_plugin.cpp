@@ -188,15 +188,15 @@ namespace eosio {
         }
 
         void add_evm_intrinsics() {
-            db->modify(db->get<protocol_state_object>(), [&](auto& ps) {
-                add_intrinsic_to_whitelist(ps.whitelisted_intrinsics, "alt_bn128_pair");
-                add_intrinsic_to_whitelist(ps.whitelisted_intrinsics, "get_block_num");
-                add_intrinsic_to_whitelist(ps.whitelisted_intrinsics, "alt_bn128_add");
-                add_intrinsic_to_whitelist(ps.whitelisted_intrinsics, "alt_bn128_mul");
-                add_intrinsic_to_whitelist(ps.whitelisted_intrinsics, "k1_recover");
-                add_intrinsic_to_whitelist(ps.whitelisted_intrinsics, "blake2_f");
-                add_intrinsic_to_whitelist(ps.whitelisted_intrinsics, "mod_exp");
-                add_intrinsic_to_whitelist(ps.whitelisted_intrinsics, "sha3");
+            db->modify(db->get<chain::protocol_state_object>(), [&](auto& ps) {
+                chain::add_intrinsic_to_whitelist(ps.whitelisted_intrinsics, "alt_bn128_pair");
+                chain::add_intrinsic_to_whitelist(ps.whitelisted_intrinsics, "get_block_num");
+                chain::add_intrinsic_to_whitelist(ps.whitelisted_intrinsics, "alt_bn128_add");
+                chain::add_intrinsic_to_whitelist(ps.whitelisted_intrinsics, "alt_bn128_mul");
+                chain::add_intrinsic_to_whitelist(ps.whitelisted_intrinsics, "k1_recover");
+                chain::add_intrinsic_to_whitelist(ps.whitelisted_intrinsics, "blake2_f");
+                chain::add_intrinsic_to_whitelist(ps.whitelisted_intrinsics, "mod_exp");
+                chain::add_intrinsic_to_whitelist(ps.whitelisted_intrinsics, "sha3");
             });
         }
     };  // subst_plugin_impl
@@ -226,6 +226,10 @@ namespace eosio {
         options(
             "subst-manifest", bpo::value<vector<string>>()->composing(),
             "url. load susbtitution information from a remote json file.");
+        options(
+            "pre-enable-evm-instrinsics", bpo::value<bool>()->default_value(false),
+            "enable GET_BLOCK_NUM and CRYPTO_PRIMITIVES protocol feature even if they are disabled"
+            "on chain");
     }
 
     void subst_plugin::plugin_initialize(const variables_map& options) {
