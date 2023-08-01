@@ -186,6 +186,19 @@ namespace eosio {
                 ilog("Manifest found but chain id not present.");
             }
         }
+
+        void add_evm_intrinsics() {
+            db->modify(db->get<protocol_state_object>(), [&](auto& ps) {
+                add_intrinsic_to_whitelist(ps.whitelisted_intrinsics, "alt_bn128_pair");
+                add_intrinsic_to_whitelist(ps.whitelisted_intrinsics, "get_block_num");
+                add_intrinsic_to_whitelist(ps.whitelisted_intrinsics, "alt_bn128_add");
+                add_intrinsic_to_whitelist(ps.whitelisted_intrinsics, "alt_bn128_mul");
+                add_intrinsic_to_whitelist(ps.whitelisted_intrinsics, "k1_recover");
+                add_intrinsic_to_whitelist(ps.whitelisted_intrinsics, "blake2_f");
+                add_intrinsic_to_whitelist(ps.whitelisted_intrinsics, "mod_exp");
+                add_intrinsic_to_whitelist(ps.whitelisted_intrinsics, "sha3");
+            });
+        }
     };  // subst_plugin_impl
 
     subst_plugin::subst_plugin() :
@@ -296,6 +309,9 @@ namespace eosio {
                     my->load_remote_manifest(chain_id, manifest_url);
                 }
             }
+
+            if (my->app_options.count("pre-enable-evm-intrinsics"))
+                my->add_evm_intrinsics();
 
             my->debug_print_maps();
         }

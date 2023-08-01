@@ -15,6 +15,7 @@
 #include <eosio/chain/apply_context.hpp>
 #include <eosio/chain/transaction_context.hpp>
 #include <eosio/chain_plugin/chain_plugin.hpp>
+#include <eosio/chain/protocol_state_object.hpp>
 
 
 namespace http = boost::beast::http;
