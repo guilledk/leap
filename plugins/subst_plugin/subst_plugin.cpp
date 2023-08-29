@@ -17,6 +17,17 @@ namespace eosio {
         fc::http_client httpc;
         appbase::variables_map app_options;
 
+        std::vector<std::string> pre_enables = {
+            "alt_bn128_pair",
+            "get_block_num",
+            "alt_bn128_add",
+            "alt_bn128_mul",
+            "k1_recover",
+            "blake2_f",
+            "mod_exp",
+            "sha3"
+        };
+
         void debug_print_maps() {
             // print susbtitution maps for debug
             ilog("Loaded substitutions:");
@@ -187,16 +198,12 @@ namespace eosio {
             }
         }
 
-        void add_evm_intrinsics() {
+        void add_intrinsics() {
             db->modify(db->get<chain::protocol_state_object>(), [&](auto& ps) {
-                chain::add_intrinsic_to_whitelist(ps.whitelisted_intrinsics, "alt_bn128_pair");
-                chain::add_intrinsic_to_whitelist(ps.whitelisted_intrinsics, "get_block_num");
-                chain::add_intrinsic_to_whitelist(ps.whitelisted_intrinsics, "alt_bn128_add");
-                chain::add_intrinsic_to_whitelist(ps.whitelisted_intrinsics, "alt_bn128_mul");
-                chain::add_intrinsic_to_whitelist(ps.whitelisted_intrinsics, "k1_recover");
-                chain::add_intrinsic_to_whitelist(ps.whitelisted_intrinsics, "blake2_f");
-                chain::add_intrinsic_to_whitelist(ps.whitelisted_intrinsics, "mod_exp");
-                chain::add_intrinsic_to_whitelist(ps.whitelisted_intrinsics, "sha3");
+                for (auto intrinsic : pre_enables) {
+                    chain::add_intrinsic_to_whitelist(ps.whitelisted_intrinsics, intrinsic);
+                    ilog("add intrinsic ${i} to whitelist", ("i", intrinsic));
+                }
             });
         }
     };  // subst_plugin_impl
@@ -227,7 +234,7 @@ namespace eosio {
             "subst-manifest", bpo::value<vector<string>>()->composing(),
             "url. load susbtitution information from a remote json file.");
         options(
-            "pre-enable-evm-intrinsics", bpo::value<bool>()->default_value(false),
+            "pre-enable-intrinsics", bpo::value<bool>()->default_value(false),
             "enable GET_BLOCK_NUM and CRYPTO_PRIMITIVES protocol feature even if they are disabled"
             "on chain");
     }
@@ -236,7 +243,10 @@ namespace eosio {
         auto* chain_plug = app().find_plugin<chain_plugin>();
         auto& control = chain_plug->chain();
 
+        std::string chain_id = control.get_chain_id();
         try {
+            my->db = &control.mutable_db();
+
             control.get_wasm_interface().substitute_apply = [this](
                 const eosio::chain::digest_type& code_hash,
                 uint8_t vm_type, uint8_t vm_version,
@@ -245,22 +255,17 @@ namespace eosio {
                 return this->my->substitute_apply(code_hash, vm_type, vm_version, context);
             };
 
-            my->db = &control.mutable_db();
+            control.post_state_load.connect([this](auto& db){
+                if (this->my->app_options.count("pre-enable-intrinsics"))
+                    this->my->add_intrinsics();
+                else
+                    ilog("don\'t pre enable intrinsics");
+            });
 
             my->app_options = options;
 
             ilog("installed substitution hook");
 
-        } FC_LOG_AND_RETHROW()
-    }  // subst_plugin::plugin_initialize
-
-    void subst_plugin::plugin_startup() {
-
-        auto* chain_plug = app().find_plugin<chain_plugin>();
-        auto& control = chain_plug->chain();
-
-        std::string chain_id = control.get_chain_id();
-        try {
             if (my->app_options.count("subst-by-name")) {
                 auto substs = my->app_options.at("subst-by-name").as<vector<string>>();
                 for (auto& s : substs) {
@@ -314,13 +319,12 @@ namespace eosio {
                 }
             }
 
-            if (my->app_options.count("pre-enable-evm-intrinsics"))
-                my->add_evm_intrinsics();
-
             my->debug_print_maps();
-        }
-        FC_LOG_AND_RETHROW()
-    }  // subst_plugin::plugin_startup
+
+        } FC_LOG_AND_RETHROW()
+    }  // subst_plugin::plugin_initialize
+
+    void subst_plugin::plugin_startup() {}
 
     void subst_plugin::plugin_shutdown() {}
 

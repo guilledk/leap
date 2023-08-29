@@ -737,6 +737,8 @@ struct controller_impl {
          ilog( "chain database started with hash: ${hash}", ("hash", calculate_integrity_hash()) );
       okay_to_print_integrity_hash_on_stop = true;
 
+      self.post_state_load( db );
+
       replay( check_shutdown ); // replay any irreversible and reversible blocks ahead of current head
 
       if( check_shutdown() ) return;
