@@ -6,11 +6,21 @@ namespace eosio {
 
     struct subst_plugin_impl : std::enable_shared_from_this<subst_plugin_impl> {
 
+        // info_hash: either hash of account name or wasm
+
+        // target substitution info_hash -> new_hash
         std::map<fc::sha256, fc::sha256> substitutions;
+
+        // target substitution block num from to apply it info_hash -> block_num
         std::map<fc::sha256, uint32_t> sub_from;
+
+        // wasms-to-subst store
         std::map<fc::sha256, std::vector<uint8_t>> codes;
 
+        // applied substitutions account_name
         std::set<eosio::name> target_names;
+
+        // applied substitutions og_hash -> new_hash
         std::map<fc::sha256, fc::sha256> enabled_substitutions;
 
         chainbase::database* db;
@@ -160,6 +170,9 @@ namespace eosio {
 
             target_names.insert(context.get_receiver());
             enabled_substitutions[og_hash] = new_hash;
+
+            ilog("replaced ${oh} with ${nh}", ("oh", og_hash)("nh", new_hash));
+            ilog("target_names: ${tnames}", ("tnames",target_names));
         }
 
         bool substitute_apply(
@@ -196,6 +209,12 @@ namespace eosio {
                     // same hash multiple times
 
                     ilog("setcode to ${acc} detected...", ("acc", setcode_act.account));
+
+                    target_names.erase(setcode_act.account);
+                    ilog(
+                        "cleared old subst metadata for ${acc}",
+                        ("acc", setcode_act.account)
+                    );
 
                     fc::sha256 new_code_hash = fc::sha256::hash(
                         setcode_act.code.data(), (uint32_t)setcode_act.code.size() );
