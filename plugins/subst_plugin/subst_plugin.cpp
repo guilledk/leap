@@ -6,26 +6,8 @@ namespace eosio {
 
     struct subst_plugin_impl : std::enable_shared_from_this<subst_plugin_impl> {
 
-        // info_hash: either hash of account name or wasm
-
-        // target substitution info_hash -> new_hash
-        std::map<fc::sha256, fc::sha256> substitutions;
-
-        // target substitution block num from to apply it info_hash -> block_num
-        std::map<fc::sha256, uint32_t> sub_from;
-
-        // wasms-to-subst store
-        std::map<fc::sha256, std::vector<uint8_t>> codes;
-
-        // applied substitutions account_name
-        std::set<eosio::name> target_names;
-
-        // applied substitutions og_hash -> new_hash
-        std::map<fc::sha256, fc::sha256> enabled_substitutions;
-
         chainbase::database* db;
         controller* control;
-        producer_plugin* prod_plug;
 
         fc::http_client httpc;
         appbase::variables_map app_options;
@@ -34,145 +16,239 @@ namespace eosio {
         bool should_perform_override = false;
         uint32_t override_time = 300;
 
-        void init(chain_plugin* chain, producer_plugin* producer, const variables_map& options) {
-            prod_plug = producer;
-            const auto runtime_options = prod_plug->get_runtime_options();
-            if (runtime_options.max_transaction_time.has_value())
-                override_time = runtime_options.max_transaction_time.value();
+        void subst_meta_new(
+            name account,
+            uint64_t from_block,
+            std::vector<uint8_t> s_code
+        ) {
+            auto s_hash = fc::sha256::hash((const char*)s_code.data(), s_code.size());
 
+            db->create<subst_meta_object>([&](subst_meta_object& meta) {
+                meta.account = account;
+                meta.from_block = from_block;
+
+                meta.og_hash = ZERO_SHA;
+
+                meta.s_hash = s_hash;
+                meta.s_code.assign(s_code.data(), s_code.size());
+            });
+
+            ilog("created new subst metadata row for ${acc}", ("acc", account));
+        }
+
+        const subst_meta_object* subst_meta_get_by_account(name account) {
+            return db->find<subst_meta_object, by_account>(account);
+        }
+
+        void subst_meta_update(
+            name account,
+            uint64_t from_block,
+            std::vector<uint8_t> code
+        ) {
+            const auto& meta_itr = subst_meta_get_by_account(account);
+
+            // subst_meta_object for account must exist
+            EOS_ASSERT(
+                meta_itr,
+                fc::assert_exception,
+                "Substitution metadata for account ${acc} not found!",
+                ("acc", account)
+            );
+
+            auto hash = fc::sha256::hash((const char*)code.data(), code.size());
+
+            db->modify(*meta_itr, [&](subst_meta_object& meta) {
+                meta.s_code.assign(code.data(), code.size());
+                meta.s_hash = hash;
+            });
+
+            ilog("updated subst metadata row for ${acc}", ("acc", account));
+        }
+
+        void subst_meta_register_subst_or_update(
+            std::string subst_info,
+            std::vector<uint8_t> code
+        ) {
+            std::vector<std::string> v;
+            boost::split(v, subst_info, boost::is_any_of("-"));
+
+            name account;
+            auto from_block = 0;
+
+            if (v.size() == 2) {
+                account = name(v[0]);
+                from_block = std::stoul(v[1]);
+
+            } else
+                account = name(subst_info);
+
+            ilog("registering subst for ${acc}", ("acc",account));
+
+            auto meta = db->find<subst_meta_object, by_account>(account);
+
+            if(meta)
+                subst_meta_update(account, from_block, code);
+
+            else
+                subst_meta_new(account, from_block, code);
+        }
+
+        void subst_meta_swap_on_chain(
+            const subst_meta_object* meta_itr,
+            uint8_t vm_type, uint8_t vm_version
+        ) {
+            EOS_ASSERT(
+                meta_itr,
+                fc::assert_exception,
+                "Tried to swap code on an inexistant subst_meta_id ${sid}",
+                ("sid", meta_itr->id)
+            );
+
+            const chain::code_object* on_chain_co = db->find<chain::code_object, chain::by_code_hash>(
+                boost::make_tuple(meta_itr->og_hash, vm_type, vm_version));
+
+            EOS_ASSERT(
+                meta_itr,
+                fc::assert_exception,
+                "Tried to swap code on an inexistant cbo ${ohash}",
+                ("ohash", meta_itr->og_hash)
+            );
+
+            auto code = on_chain_co->code;
+
+            auto hash = fc::sha256::hash((const char*)code.data(), code.size());
+
+            ilog("test");
+
+            db->modify(*meta_itr, [&](subst_meta_object& meta) {
+                meta.og_code.assign(code.data(), code.size());
+                meta.og_hash = hash;
+            });
+
+            ilog("test1");
+
+            db->modify(*on_chain_co, [&](chain::code_object& o) {
+                o.code.assign(meta_itr->s_code.data(), meta_itr->s_code.size());
+                o.vm_type = 0;
+                o.vm_version = 0;
+            });
+
+            ilog(
+                "performed swap for account ${acc} \"${ohash}\" -> \"${shash}\"",
+                ("acc", meta_itr->account)("ohash", hash)("shash", meta_itr->s_hash)
+            );
+        }
+
+        void subst_meta_debug_print() {
+            const auto& meta_idx = db->get_index<subst_meta_index, by_id>();
+            ilog("substitution metadata on db: ");
+            for (auto itr = meta_idx.begin(); itr != meta_idx.end(); itr++) {
+                ilog(
+                    "${id}: account \"${acc}\" from block ${fblock} "
+                    "on-chain hash: \"${ohash}\" -> subst hash \"${shash}\"",
+                    ("id", itr->id)("acc", itr->account)("fblock", itr->from_block)("ohash", itr->og_hash)("shash", itr->s_hash)
+                );
+            }
+        }
+
+        void subst_meta_maybe_update(
+            fc::sha256 code_hash,
+            eosio::chain::apply_context& context,
+            uint8_t vm_type,
+            uint8_t vm_version
+        ) {
+            eosio::name receiver = context.get_receiver();
+            auto act = context.get_action();
+            auto block_num = context.control.pending_block_num();
+
+
+            const auto& meta = subst_meta_get_by_account(receiver);
+
+            if (!meta)
+                return;
+
+            if (block_num >= meta->from_block) {
+
+                if (meta->og_hash == ZERO_SHA ||
+                    meta->og_hash != code_hash) {
+                    ilog("must swap ${acc}", ("acc", meta->account));
+                    subst_meta_swap_on_chain(meta, vm_type, vm_version);
+                }
+            }
+
+        }
+
+        void init(chain_plugin* chain, const variables_map& options) {
             app_options = options;
 
             control = &chain->chain();
             db = &control->mutable_db();
 
-            try {
-                control->get_wasm_interface().substitute_apply = [&](
-                    const eosio::chain::digest_type& code_hash,
-                    uint8_t vm_type, uint8_t vm_version,
-                    eosio::chain::apply_context& context
-                ) {
-                    return substitute_apply(code_hash, vm_type, vm_version, context);
-                };
-                ilog("installed substitution hook");
+            control->get_wasm_interface().substitute_apply = [&](
+                const eosio::chain::digest_type& code_hash,
+                uint8_t vm_type, uint8_t vm_version,
+                eosio::chain::apply_context& context
+            ) {
+                return substitute_apply(code_hash, vm_type, vm_version, context);
+            };
 
-                override_tx_time = (options.count("override-max-tx-time") &&
-                                           options["override-max-tx-time"].as<bool>());
-                should_perform_override = override_tx_time;
+            control->post_db_init = [&]() {
+                post_db_init();
+            };
 
-                ilog("should_perform_override: {over}", ("over",should_perform_override));
-
-                std::string chain_id = control->get_chain_id();
-
-                if (options.count("subst-by-name")) {
-                    auto substs = options.at("subst-by-name").as<vector<string>>();
-                    for (auto& s : substs) {
-                        std::vector<std::string> v;
-                        boost::split(v, s, boost::is_any_of(":"));
-
-                        EOS_ASSERT(
-                            v.size() == 2,
-                            fc::invalid_arg_exception,
-                            "Invalid value ${s} for --subst-by-name"
-                            " format is {account_name}:{path_to_wasm}", ("s", s)
-                        );
-
-                        auto account_name = v[0];
-                        auto new_code_path = v[1];
-
-                        std::vector<uint8_t> new_code = eosio::vm::read_wasm(new_code_path);
-                        register_substitution(account_name, new_code);
-                    }
-                }
-                if (options.count("subst-by-hash")) {
-                    auto substs = options.at("subst-by-hash").as<vector<string>>();
-                    for (auto& s : substs) {
-                        std::vector<std::string> v;
-                        boost::split(v, s, boost::is_any_of(":"));
-
-                        EOS_ASSERT(
-                            v.size() == 2,
-                            fc::invalid_arg_exception,
-                            "Invalid value ${s} for --subst-by-hash"
-                            " format is {contract_hash}:{path_to_wasm}", ("s", s)
-                        );
-
-                        auto contract_hash = v[0];
-                        auto new_code_path = v[1];
-
-                        std::vector<uint8_t> new_code = eosio::vm::read_wasm(new_code_path);
-                        register_substitution(contract_hash, new_code);
-                    }
-                }
-                if (options.count("subst-manifest")) {
-                    auto substs = options.at("subst-manifest").as<vector<string>>();
-                    for (auto& s : substs) {
-                        auto manifest_url = fc::url(s);
-                        EOS_ASSERT(
-                            manifest_url.proto() == "http",
-                            fc::invalid_arg_exception,
-                            "Only http protocol supported for now."
-                        );
-                        load_remote_manifest(chain_id, manifest_url);
-                    }
-                }
-
-                debug_print_maps();
-
-            } FC_LOG_AND_RETHROW()
+            ilog("installed substitution hook for ${cid}", ("cid", control->get_chain_id()));
         }
 
-        void debug_print_maps() {
-            // print susbtitution maps for debug
-            ilog("loaded substitutions:");
-            for (auto it = substitutions.begin();
-                it != substitutions.end(); it++) {
-                auto key = it->first;
-                auto new_hash = it->second;
-                auto bnum_it = sub_from.find(key);
-                if (bnum_it == sub_from.end()) {
-                    ilog(
-                        "${k} -> ${new_hash}",
-                        ("k", key)("new_hash", new_hash)
+        void post_db_init(){
+            db->add_index<subst_meta_index>();
+
+            override_tx_time = (app_options.count("override-max-tx-time") &&
+                                        app_options["override-max-tx-time"].as<uint32_t>());
+
+            should_perform_override = override_tx_time;
+
+            if (should_perform_override) {
+                override_time = app_options["override-max-tx-time"].as<uint32_t>();
+
+                ilog("should_perform_override: ${over}ms", ("over",override_time));
+            }
+
+            std::string chain_id = control->get_chain_id();
+
+            if (app_options.count("subst-by-name")) {
+                auto substs = app_options.at("subst-by-name").as<vector<string>>();
+                for (auto& s : substs) {
+                    std::vector<std::string> v;
+                    boost::split(v, s, boost::is_any_of(":"));
+
+                    EOS_ASSERT(
+                        v.size() == 2,
+                        fc::invalid_arg_exception,
+                        "Invalid value ${s} for --subst-by-name"
+                        " format is ${account_name}:${path_to_wasm}", ("s", s)
                     );
-                } else {
-                    ilog(
-                        "${k} -> ${new_hash} from block ${from}",
-                        ("k", key)("new_hash", new_hash)("from", bnum_it->second)
-                    );
+
+                    auto sinfo = v[0];
+                    auto new_code_path = v[1];
+
+                    std::vector<uint8_t> new_code = eosio::vm::read_wasm(new_code_path);
+                    subst_meta_register_subst_or_update(sinfo, new_code);
                 }
             }
-        }
+            if (app_options.count("subst-manifest")) {
+                auto substs = app_options.at("subst-manifest").as<vector<string>>();
+                for (auto& s : substs) {
+                    auto manifest_url = fc::url(s);
+                    EOS_ASSERT(
+                        manifest_url.proto() == "http",
+                        fc::invalid_arg_exception,
+                        "Only http protocol supported for now."
+                    );
+                    load_remote_manifest(chain_id, manifest_url);
+                }
+            }
 
-        void perform_replacement(
-            fc::sha256 og_hash,
-            fc::sha256 new_hash,
-            uint8_t vm_type,
-            uint8_t vm_version,
-            eosio::chain::apply_context& context
-        ) {
-
-            const chain::code_object* target_entry = db->find<chain::code_object, chain::by_code_hash>(
-                boost::make_tuple(og_hash, vm_type, vm_type));
-
-            EOS_ASSERT(
-                target_entry,
-                fc::invalid_arg_exception,
-                "target entry for substitution doesn't exist"
-            );
-
-            auto code = codes[new_hash];
-
-            db->modify(*target_entry, [&](chain::code_object& o) {
-                o.code.assign(code.data(), code.size());
-                o.vm_type = 0;
-                o.vm_version = 0;
-            });
-
-            target_names.insert(context.get_receiver());
-            enabled_substitutions[og_hash] = new_hash;
-
-            ilog("replaced ${oh} with ${nh}", ("oh", og_hash)("nh", new_hash));
-            ilog("target_names: ${tnames}", ("tnames",target_names));
+            subst_meta_debug_print();
         }
 
         bool substitute_apply(
@@ -181,131 +257,28 @@ namespace eosio {
             uint8_t vm_version,
             eosio::chain::apply_context& context
         ) {
-            eosio::name receiver = context.get_receiver();
-            auto act = context.get_action();
+            try {
+                eosio::name receiver = context.get_receiver();
+                auto act = context.get_action();
 
-            if (override_tx_time) {
-                if (should_perform_override) pwn_gpo();
+                if (override_tx_time) {
+                    if (should_perform_override) pwn_gpo();
 
-                if (receiver == eosio::name("eosio") &&
-                    act.name == eosio::name("setparams")) {
+                    if (receiver == eosio::name("eosio") &&
+                        act.name == eosio::name("setparams")) {
 
-                    should_perform_override = true;
-                    ilog(
-                        "setparams detected at ${bnum}, pwning gpo on next action",
-                        ("bnum", control->pending_block_num())
-                    );
-                }
-            }
-
-            if (receiver == eosio::name("eosio") &&
-                act.name == eosio::name("setcode")) {
-                auto setcode_act = act.data_as<chain::setcode>();
-                auto trgt_name_it = target_names.find(setcode_act.account);
-                if (trgt_name_it != target_names.end()) {
-                    // if this setcode action involves an enabled subst
-                    // delete subst metadata so that it gets redone, to
-                    // fix the case where we deploy a contract with
-                    // same hash multiple times
-
-                    ilog("setcode to ${acc} detected...", ("acc", setcode_act.account));
-
-                    target_names.erase(setcode_act.account);
-                    ilog(
-                        "cleared old subst metadata for ${acc}",
-                        ("acc", setcode_act.account)
-                    );
-
-                    fc::sha256 new_code_hash = fc::sha256::hash(
-                        setcode_act.code.data(), (uint32_t)setcode_act.code.size() );
-
-                    auto hash_it = enabled_substitutions.find(new_code_hash);
-                    if (hash_it != enabled_substitutions.end()) {
-                        enabled_substitutions.erase(hash_it);
+                        should_perform_override = true;
                         ilog(
-                            "cleared old subst metadata for ${hash}",
-                            ("hash", new_code_hash)
+                            "setparams detected at ${bnum}, pwning gpo on next action",
+                            ("bnum", control->pending_block_num())
                         );
                     }
                 }
-            }
 
-            auto it = enabled_substitutions.find(code_hash);
-            if (it != enabled_substitutions.end())
-                return false;
+                subst_meta_maybe_update(code_hash, context, vm_type, vm_version);
 
-            try {
-                auto block_num = context.control.pending_block_num();
-
-                // match by name
-                auto name_hash = fc::sha256::hash(receiver.to_string());
-                auto it = substitutions.find(name_hash);
-                if (it != substitutions.end()) {
-                    // check if substitution has a from block entry
-                    if (auto bnum_it = sub_from.find(name_hash); bnum_it != sub_from.end()) {
-                        if (block_num >= bnum_it->second) {
-                            perform_replacement(
-                                code_hash, it->second, vm_type, vm_version, context);
-                        }
-                    } else {
-                        perform_replacement(
-                            code_hash, it->second, vm_type, vm_version, context);
-                    }
-                }
-
-                // match by hash
-                if (auto it = substitutions.find(code_hash); it != substitutions.end()) {
-                    // check if substitution has a from block entry
-                    if (auto bnum_it = sub_from.find(code_hash); bnum_it != sub_from.end()) {
-                        if (block_num >= bnum_it->second) {
-                            perform_replacement(
-                                code_hash, it->second, vm_type, vm_version, context);
-                        }
-                    } else {
-                        perform_replacement(
-                            code_hash, it->second, vm_type, vm_version, context);
-                    }
-                }
-
-                // no matches for this call
                 return false;
             } FC_LOG_AND_RETHROW()
-        }
-
-        void register_substitution(
-            std::string subst_info,
-            std::vector<uint8_t> code
-        ) {
-            std::vector<std::string> v;
-            boost::split(v, subst_info, boost::is_any_of("-"));
-
-            auto from_block = 0;
-
-            if (v.size() == 2) {
-                subst_info = v[0];
-                from_block = std::stoul(v[1]);
-            }
-
-            // store code in internal store
-            auto new_hash = fc::sha256::hash((const char*)code.data(), code.size());
-            codes[new_hash] = code;
-
-            fc::sha256 info_hash;
-
-            // update substitution maps
-            if (subst_info.size() < 16) {
-                // if smaller than 16 char assume its an account name
-                auto account_name = eosio::name(subst_info);
-                info_hash = fc::sha256::hash(account_name.to_string());
-            } else {
-                // if not assume its a code hash
-                info_hash = fc::sha256(subst_info);
-            }
-            substitutions[info_hash] = new_hash;
-
-            if (from_block > 0)
-                sub_from[info_hash] = from_block;
-
         }
 
         void load_remote_manifest(std::string chain_id, fc::url manifest_url) {
@@ -337,7 +310,7 @@ namespace eosio {
                     ilog("done.");
 
                     std::string subst_info = subst_entry.key();
-                    register_substitution(subst_info, new_code);
+                    subst_meta_register_subst_or_update(subst_info, new_code);
                 }
             } else {
                 ilog("manifest found but chain id not present.");
@@ -407,25 +380,19 @@ namespace eosio {
             "other constraints on debug.wasm. nodeos still enforces constraints on contract.wasm. "
             "(may specify multiple times)");
         options(
-            "subst-by-hash", bpo::value<vector<string>>()->composing(),
-            "contract_hash:new_contract.wasm. Whenever the contract with \"contract_hash\""
-            "needs to run, substitute debug.wasm in "
-            "its place and enable debugging support. This bypasses size limits, timer limits, and "
-            "other constraints on debug.wasm. nodeos still enforces constraints on contract.wasm. "
-            "(may specify multiple times)");
-        options(
             "subst-manifest", bpo::value<vector<string>>()->composing(),
             "url. load susbtitution information from a remote json file.");
         options(
-            "override-max-tx-time", boost::program_options::bool_switch(),
-            "Override on chain max-transaction-time with local producer_plugin config.");
+            "override-max-tx-time", bpo::value<uint32_t>(),
+            "Override on chain max-transaction-time with value.");
     }
 
     void subst_plugin::plugin_initialize(const variables_map& options) {
-        auto* chain_plug = app().find_plugin<chain_plugin>();
-        auto* prod_plug = app().find_plugin<producer_plugin>();
+        try {
+            auto* chain_plug = app().find_plugin<chain_plugin>();
 
-        my->init(chain_plug, prod_plug, options);
+            my->init(chain_plug, options);
+        } FC_LOG_AND_RETHROW()
     }  // subst_plugin::plugin_initialize
 
     void subst_plugin::plugin_startup() {}
