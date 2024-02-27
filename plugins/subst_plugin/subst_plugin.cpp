@@ -4,7 +4,18 @@ namespace eosio {
 
     static auto _subst_plugin = application::register_plugin<subst_plugin>();
 
-    struct subst_plugin_impl : std::enable_shared_from_this<subst_plugin_impl> {
+    class subst_plugin_impl : public std::enable_shared_from_this<subst_plugin_impl> {
+        private:
+            boost::asio::steady_timer _timer;
+            std::chrono::seconds _interval = std::chrono::seconds(300);
+
+        public:
+            subst_plugin_impl(boost::asio::io_service& io)
+            :_timer(io)
+            {}
+
+        std::string chain_id;
+        fc::url manifest_url;
 
         chainbase::database* db;
         controller* control;
@@ -58,6 +69,7 @@ namespace eosio {
             auto hash = fc::sha256::hash((const char*)code.data(), code.size());
 
             db->modify(*meta_itr, [&](subst_meta_object& meta) {
+                meta.og_hash = ZERO_SHA;
                 meta.s_code.assign(code.data(), code.size());
                 meta.s_hash = hash;
             });
@@ -94,38 +106,43 @@ namespace eosio {
         }
 
         void subst_meta_swap_on_chain(
-            const subst_meta_object* meta_itr,
+            fc::sha256 code_hash,
+            const name& account,
             uint8_t vm_type, uint8_t vm_version
         ) {
+            const auto& meta_itr = subst_meta_get_by_account(account);
+
             EOS_ASSERT(
                 meta_itr,
                 fc::assert_exception,
-                "Tried to swap code on an inexistant subst_meta_id ${sid}",
-                ("sid", meta_itr->id)
+                "Tried to swap code on an inexistant subst_meta_id"
             );
 
             const chain::code_object* on_chain_co = db->find<chain::code_object, chain::by_code_hash>(
-                boost::make_tuple(meta_itr->og_hash, vm_type, vm_version));
+                boost::make_tuple(code_hash, vm_type, vm_version));
 
             EOS_ASSERT(
-                meta_itr,
+                on_chain_co,
                 fc::assert_exception,
                 "Tried to swap code on an inexistant cbo ${ohash}",
-                ("ohash", meta_itr->og_hash)
+                ("ohash", code_hash)
             );
 
             auto code = on_chain_co->code;
 
-            auto hash = fc::sha256::hash((const char*)code.data(), code.size());
+            auto calc_code_hash = fc::sha256::hash((const char*)code.data(), code.size());
 
-            ilog("test");
+            EOS_ASSERT(
+                calc_code_hash == code_hash,
+                fc::assert_exception,
+                "Swap on chain calc hash (${cchash}) differs from passed code_hash (${chash})",
+                ("cchash", calc_code_hash)("chash", code_hash)
+            );
 
             db->modify(*meta_itr, [&](subst_meta_object& meta) {
                 meta.og_code.assign(code.data(), code.size());
-                meta.og_hash = hash;
+                meta.og_hash = code_hash;
             });
-
-            ilog("test1");
 
             db->modify(*on_chain_co, [&](chain::code_object& o) {
                 o.code.assign(meta_itr->s_code.data(), meta_itr->s_code.size());
@@ -135,7 +152,7 @@ namespace eosio {
 
             ilog(
                 "performed swap for account ${acc} \"${ohash}\" -> \"${shash}\"",
-                ("acc", meta_itr->account)("ohash", hash)("shash", meta_itr->s_hash)
+                ("acc", meta_itr->account)("ohash", code_hash)("shash", meta_itr->s_hash)
             );
         }
 
@@ -161,6 +178,24 @@ namespace eosio {
             auto act = context.get_action();
             auto block_num = context.control.pending_block_num();
 
+            if (receiver == eosio::name("eosio") &&
+                act.name == eosio::name("setcode")) {
+
+                auto setcode_act = act.data_as<chain::setcode>();
+
+                const auto& target_acc_meta = subst_meta_get_by_account(setcode_act.account);
+
+                if (target_acc_meta) {
+                    ilog("setcode to ${trgt_acc} detected, reset meta...", ("trgt_acc",setcode_act.account));
+
+                    db->modify(*target_acc_meta, [&](subst_meta_object& meta) {
+                        meta.og_hash = ZERO_SHA;
+                    });
+
+                }
+
+            }
+
 
             const auto& meta = subst_meta_get_by_account(receiver);
 
@@ -172,10 +207,39 @@ namespace eosio {
                 if (meta->og_hash == ZERO_SHA ||
                     meta->og_hash != code_hash) {
                     ilog("must swap ${acc}", ("acc", meta->account));
-                    subst_meta_swap_on_chain(meta, vm_type, vm_version);
+                    subst_meta_swap_on_chain(
+                        code_hash, meta->account, vm_type, vm_version);
                 }
             }
 
+        }
+
+        void subst_meta_deactivate_and_erase() {
+            auto& meta_idx = db->get_index<subst_meta_index>();
+            auto meta_itr = meta_idx.get<by_id>().lower_bound(0);
+            while(meta_itr != meta_idx.end()) {
+                const chain::code_object* on_chain_co = db->find<chain::code_object, chain::by_code_hash>(
+                    boost::make_tuple(meta_itr->og_hash, 0, 0));
+
+                EOS_ASSERT(
+                    on_chain_co,
+                    fc::assert_exception,
+                    "Tried to swap code on an inexistant cbo ${ohash}",
+                    ("ohash", meta_itr->og_hash)
+                );
+
+                db->modify(*on_chain_co, [&](chain::code_object& o) {
+                    o.code.assign(meta_itr->og_code.data(), meta_itr->og_code.size());
+                    o.vm_type = 0;
+                    o.vm_version = 0;
+                });
+
+                ilog("swaped ${ohash} back", ("ohash", meta_itr->og_hash));
+
+                auto& erase_ref = meta_itr;
+                meta_itr++;
+                meta_idx.erase(erase_ref);
+            }
         }
 
         void init(chain_plugin* chain, const variables_map& options) {
@@ -317,6 +381,13 @@ namespace eosio {
             }
         }
 
+        void manifest_updater_task() {
+            ilog("running manifest update");
+            load_remote_manifest(chain_id, manifest_url);
+            _timer.expires_after(_interval);
+            _timer.async_wait(boost::bind(&subst_plugin_impl::manifest_updater_task, shared_from_this()));
+        }
+
         void pwn_gpo() {
             const auto& gpo = control->get_global_properties();
             const auto override_time_us = override_time * 1000;
@@ -365,7 +436,7 @@ namespace eosio {
     };  // subst_plugin_impl
 
     subst_plugin::subst_plugin() :
-        my(std::make_shared<subst_plugin_impl>())
+        my(new subst_plugin_impl(app().get_io_service()))
     {}
 
     subst_plugin::~subst_plugin() {}
@@ -397,6 +468,8 @@ namespace eosio {
 
     void subst_plugin::plugin_startup() {}
 
-    void subst_plugin::plugin_shutdown() {}
+    void subst_plugin::plugin_shutdown() {
+        subst_meta_deactivate_and_erase();
+    }
 
 }  // namespace eosio
