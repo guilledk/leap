@@ -1,5 +1,7 @@
 #pragma once
 
+#include <boost/asio.hpp>
+#include <boost/bind/bind.hpp>
 #include <boost/beast/http.hpp>
 #include <boost/filesystem.hpp>
 #include <boost/algorithm/string.hpp>
@@ -31,7 +33,7 @@ namespace eosio {
 
     using chain::controller;
     typedef boost::filesystem::path bpath;
-    struct subst_plugin_impl;
+    class subst_plugin_impl;
 
 
     class subst_plugin : public appbase::plugin<subst_plugin> {
