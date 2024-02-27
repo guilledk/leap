@@ -20,31 +20,37 @@
 #include <eosio/producer_plugin/producer_plugin.hpp>
 #include <eosio/chain/global_property_object.hpp>
 
+#include "metadata.hpp"
+
+#define ZERO_SHA fc::sha256("00000000000000000000000000000000")
+
 
 namespace http = boost::beast::http;
 
-namespace eosio
-{
-   using chain::controller;
-   typedef boost::filesystem::path bpath;
+namespace eosio {
 
-   struct subst_plugin_impl;
+    using chain::controller;
+    typedef boost::filesystem::path bpath;
+    struct subst_plugin_impl;
 
-   class subst_plugin : public appbase::plugin<subst_plugin>
-   {
-     public:
-      APPBASE_PLUGIN_REQUIRES((chain_plugin))
 
-      subst_plugin();
-      virtual ~subst_plugin();
+    class subst_plugin : public appbase::plugin<subst_plugin> {
+        public:
+            APPBASE_PLUGIN_REQUIRES((chain_plugin))
 
-      void set_program_options(appbase::options_description& cli,
-                               appbase::options_description& cfg) override;
-      void plugin_initialize(const appbase::variables_map& options);
-      void plugin_startup();
-      void plugin_shutdown();
+            subst_plugin();
+            virtual ~subst_plugin();
 
-     private:
-      std::shared_ptr<subst_plugin_impl> my;
-   };
+            void set_program_options(appbase::options_description& cli,
+                                        appbase::options_description& cfg) override;
+            void plugin_initialize(const appbase::variables_map& options);
+            void plugin_startup();
+            void plugin_shutdown();
+
+            static fc::logger& logger();
+
+        private:
+            std::shared_ptr<subst_plugin_impl> my;
+    };
+
 }  // namespace eosio
