@@ -1,12 +1,14 @@
 add_library(
     subst_plugin
+
+    substitution_context.cpp
     subst_plugin.cpp
-    subst_plugin.hpp
 )
 
 target_link_libraries(
     subst_plugin
     chain_plugin
+    http_plugin
     eosio_chain
     appbase
     fc)
