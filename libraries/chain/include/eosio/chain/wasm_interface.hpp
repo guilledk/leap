@@ -78,12 +78,15 @@ namespace eosio { namespace chain {
          bool is_code_cached(const digest_type& code_hash, const uint8_t& vm_type, const uint8_t& vm_version) const;
 
          // If substitute_apply is set, then apply calls it before doing anything else. If substitute_apply returns true,
-         // then apply returns immediately. Provided function must be multi-thread safe.
-         std::function<bool(const digest_type& code_hash, uint8_t vm_type, uint8_t vm_version, apply_context& context)> substitute_apply;
+         // then apply returns immediately.
+         std::function<bool(
+            const digest_type& code_hash, uint8_t vm_type, uint8_t vm_version, apply_context& context)> substitute_apply;
+
+         unique_ptr<struct wasm_interface_impl> my;
 
       private:
          vm_oc_enable eosvmoc_tierup;
-         unique_ptr<struct wasm_interface_impl> my;
+         vm_type vm;
    };
 
 } } // eosio::chain
