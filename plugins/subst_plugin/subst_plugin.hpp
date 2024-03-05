@@ -1,16 +1,5 @@
 #pragma once
 
-#include <boost/asio.hpp>
-#include <boost/bind/bind.hpp>
-#include <boost/beast/http.hpp>
-#include <boost/filesystem.hpp>
-#include <boost/algorithm/string.hpp>
-
-#include <fc/io/json.hpp>
-#include <fc/network/url.hpp>
-#include <fc/network/http/http_client.hpp>
-
-
 #include <eosio/vm/backend.hpp>
 
 #include <eosio/chain/config.hpp>
@@ -28,14 +17,11 @@
 #include "api.hpp"
 
 
-namespace http = boost::beast::http;
-
 namespace eosio {
 
     using chain::controller;
     using chainbase::database;
 
-    typedef boost::filesystem::path bpath;
     class subst_plugin_impl;
 
     class subst_plugin : public appbase::plugin<subst_plugin> {

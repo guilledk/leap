@@ -35,7 +35,9 @@ namespace eosio {
 
     const chain::code_object* substitution_context::get_codeobj(const name& account, bool check_result) {
 
-        const auto& acc_meta = get_account_metadata_object(account);
+        const auto& acc_meta = get_account_metadata_object(account, check_result);
+
+        if (!acc_meta && !check_result) return nullptr;
 
         const chain::code_object* cobj = db->find<chain::code_object, chain::by_code_hash>(
             boost::make_tuple(acc_meta->code_hash, acc_meta->vm_type, acc_meta->vm_version));
@@ -63,13 +65,14 @@ namespace eosio {
     void substitution_context::create(
         const name& account,
         uint64_t from_block,
-        const std::vector<uint8_t>& s_code
+        const std::vector<uint8_t>& code,
+        bool must_activate
     ) {
         const auto& meta = db->create<subst_meta_object>([&](subst_meta_object& meta) {
             meta.account = account;
             meta.from_block = from_block;
-
-            meta.s_code.assign(s_code.data(), s_code.size());
+            meta.s_code.assign(code.data(), code.size());
+            meta.must_activate = must_activate;
         });
         ilog(
             "created new substitution metadata entry for ${acc} shash: ${shash}",
@@ -81,7 +84,8 @@ namespace eosio {
     void substitution_context::update(
         const name& account,
         uint64_t from_block,
-        const std::vector<uint8_t>& code
+        const std::vector<uint8_t>& code,
+        bool must_activate
     ) {
         const auto& meta_itr = get_by_account(account);
 
@@ -89,6 +93,7 @@ namespace eosio {
 
         db->modify(*meta_itr, [&](subst_meta_object& meta) {
             meta.s_code.assign(code.data(), code.size());
+            meta.must_activate = must_activate;
         });
 
         ilog(
@@ -100,13 +105,36 @@ namespace eosio {
     void substitution_context::upsert(
         const name& account,
         uint64_t from_block,
-        const std::vector<uint8_t>& code
+        const std::vector<uint8_t>& code,
+        bool must_activate
     ) {
         if(get_by_account(account, false))
-            update(account, from_block, code);
+            update(account, from_block, code, must_activate);
 
         else
-            create(account, from_block, code);
+            create(account, from_block, code, must_activate);
+    }
+
+
+    void substitution_context::upsert(
+        std::string info,
+        const std::vector<uint8_t>& code,
+        bool must_activate
+    ) {
+        std::vector<std::string> v;
+        boost::split(v, info, boost::is_any_of("-"));
+
+        name account;
+        auto from_block = 0;
+
+        if (v.size() == 2) {
+            account = name(v[0]);
+            from_block = std::stoul(v[1]);
+
+        } else
+            account = name(info);
+
+        upsert(account, from_block, code);
     }
 
 
@@ -124,13 +152,12 @@ namespace eosio {
             });
         }
 
-        reset_caches(account);
-
         db->modify(*cobj, [&](chain::code_object& o) {
             o.code.assign(meta->s_code.data(), meta->s_code.size());
             o.vm_type = 0;
             o.vm_version = 0;
         });
+        reset_caches(account);
 
         ilog(
             "swapped ${acc}: ${hash} for ${shash}, actual: ${ahash}",
@@ -143,25 +170,28 @@ namespace eosio {
 
 
     void substitution_context::reset_caches(const name& account) {
-        // remove wasm module cache if present
-        control->get_wasm_interface().current_lib(
-            control->pending_block_num());
 
-        std::string msg = "did reset of wasm_iface";
-
-#ifdef EOSIO_EOS_VM_OC_RUNTIME_ENABLED
         const auto& cobj = get_codeobj(account);
 
-        // remove eosvmoc code cache
+        // remove wasm module cache if present
+        auto& wasm_cache = control->get_wasm_interface().my->wasm_instantiation_cache;
+        wasm_cache_index::iterator it = wasm_cache.find(
+            boost::make_tuple(cobj->code_hash, cobj->vm_type, cobj->vm_version) );
+
+        if (it != wasm_cache.end()) {
+            wasm_cache.erase(it);
+            ilog("removed ${acc} from wasm interface cache", ("acc", account));
+        }
+
+#ifdef EOSIO_EOS_VM_OC_RUNTIME_ENABLED
+        // remove eosvmoc code cache if present
         std::optional<eosvmoc_tier>& eosvmoc = get_eosvmoc();
 
         if (eosvmoc) {
             eosvmoc->cc.free_code(cobj->code_hash, cobj->vm_version);
-            msg += " & eosvmoc";
+            ilog("removed ${acc} from eosvmoc cache", ("acc", account));
         }
 #endif
-
-        ilog(msg + " code cache");
     }
 
 
@@ -198,6 +228,10 @@ namespace eosio {
 
         } else
             ilog("no need to deactivate ${acc}, subst not applied", ("acc", account));
+
+        db->modify(*meta, [&](subst_meta_object& m) {
+            m.must_activate = false;
+        });
     }
 
 
@@ -234,12 +268,12 @@ namespace eosio {
         auto act = context.get_action();
         uint32_t block_num = context.control.pending_block_num();
 
-        const auto& meta = get_by_account(receiver);
+        const auto& meta = get_by_account(receiver, false);
 
         if (!meta)
             return;  // no subst for this contract
 
-        if (block_num >= meta->from_block) {  // if we are in subst range
+        if (block_num >= meta->from_block && meta->must_activate) {  // if we are in subst range
 
             if (code_hash != meta->og_hash()) {  // on chain code changed for this account, need to store copy and swap
                 ilog(
@@ -264,6 +298,65 @@ namespace eosio {
                 activate(meta->account, false);
             }
         }
+    }
+
+
+    void substitution_context::fetch_manifest() {
+        EOS_ASSERT(manifest_url, fc::assert_exception, "Tried to fetch manifest but no source configured");
+
+        fc::url target_url = *manifest_url;
+
+        string upath = target_url.path()->generic_string();
+
+        if (!boost::algorithm::ends_with(upath, "subst.json"))
+            wlog("looks like provided url based substitution manifest"
+                    "doesn\'t end with \"susbt.json\"... trying anyways...");
+
+        fc::variant manifest = httpc.get_sync_json(target_url);
+        auto& manif_obj = manifest.get_object();
+
+        ilog("got manifest from ${url}", ("url", target_url));
+
+        string chain_id = control->get_chain_id();
+
+        // remove all active substitutions
+        for (const name& account : get_substitutions()) {
+            deactivate(account);
+            remove(account);
+        }
+
+        auto it = manif_obj.find(chain_id);
+        if (it != manif_obj.end()) {
+            for (auto subst_entry : (*it).value().get_object()) {
+                bpath url_path = *(target_url.path());
+                auto wasm_url_path = url_path.remove_filename() / chain_id / subst_entry.value().get_string();
+
+                auto wasm_url = fc::url(
+                    target_url.proto(), target_url.host(), target_url.user(), target_url.pass(),
+                    wasm_url_path,
+                    target_url.query(), target_url.args(), target_url.port()
+                );
+
+                ilog("downloading wasm from ${wurl}...", ("wurl", wasm_url));
+                std::vector<uint8_t> new_code = httpc.get_sync_raw(wasm_url);
+                ilog("done.");
+
+                std::string subst_info = subst_entry.key();
+                upsert(subst_info, new_code);
+            }
+        } else {
+            ilog("manifest found but chain id not present.");
+        }
+    }
+
+    void substitution_context::manifest_fetcher_task() {
+        if (!manifest_url) return;
+        ilog("running manifest update");
+        fetch_manifest();
+        manifest_timer.expires_after(manifest_fetch_interval);
+        manifest_timer.async_wait(
+            boost::bind(
+                &substitution_context::manifest_fetcher_task, shared_from_this()));
     }
 
 }  // namespace eosio

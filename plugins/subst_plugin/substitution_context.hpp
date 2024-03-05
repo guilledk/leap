@@ -1,16 +1,30 @@
 #pragma once
 
+#include <boost/asio.hpp>
+#include <boost/bind/bind.hpp>
+#include <boost/beast/http.hpp>
+#include <boost/filesystem.hpp>
+#include <boost/algorithm/string.hpp>
+
+#include <fc/io/json.hpp>
+#include <fc/network/url.hpp>
+#include <fc/network/http/http_client.hpp>
 
 #include <eosio/chain/apply_context.hpp>
 #include <eosio/chain/account_object.hpp>
 #include <eosio/chain/multi_index_includes.hpp>
-
 #include <eosio/chain_plugin/chain_plugin.hpp>
+#include <eosio/chain/wasm_interface_private.hpp>
 
 #ifdef EOSIO_EOS_VM_OC_RUNTIME_ENABLED
-#include <eosio/chain/wasm_interface_private.hpp>
 #include <eosio/chain/webassembly/eos-vm-oc/code_cache.hpp>
 #endif
+
+
+typedef boost::filesystem::path bpath;
+
+
+namespace http = boost::beast::http;
 
 
 namespace eosio {
@@ -20,6 +34,8 @@ namespace eosio {
 
     using chain::code_object;
     using chain::account_metadata_object;
+
+    typedef chain::wasm_interface_impl::wasm_cache_index wasm_cache_index;
 
 #ifdef EOSIO_EOS_VM_OC_RUNTIME_ENABLED
     using chain::eosvmoc::code_descriptor;
@@ -39,6 +55,8 @@ namespace eosio {
 
         chain::shared_blob og_code;           // original code
         chain::shared_blob s_code;            // subst code
+
+        bool must_activate;
 
         const digest_type og_hash() const {
             if (og_code.size() == 0) return digest_type();
@@ -60,11 +78,19 @@ namespace eosio {
         >
     >;
 
-    class substitution_context {
+    class substitution_context : public std::enable_shared_from_this<substitution_context> {
         public:
+            std::optional<fc::url> manifest_url;
+            std::chrono::seconds manifest_fetch_interval = std::chrono::seconds(300);
+
             substitution_context(
-                chain::controller* _control
-            ) : control(_control), db(&_control->mutable_db()) {}
+                chain::controller* _control,
+                boost::asio::io_service& _io
+            ) :
+                control(_control),
+                db(&_control->mutable_db()),
+                manifest_timer(_io)
+            {}
 
             // nodeos code store getters
             const account_metadata_object* get_account_metadata_object(const name& account, bool check_result = true);
@@ -72,7 +98,8 @@ namespace eosio {
             const digest_type              get_codeobj_hash(const name& account);
 
             // upsert
-            void upsert(const name& account, uint64_t from_block, const std::vector<uint8_t>& code);
+            void upsert(std::string info, const std::vector<uint8_t>& code, bool must_activate = true);
+            void upsert(const name& account, uint64_t from_block, const std::vector<uint8_t>& code, bool must_activate = true);
 
             // perform substitution
             void activate(const name& account, bool save_og = true);
@@ -109,16 +136,25 @@ namespace eosio {
             }
 #endif
 
+            // manifest
+            void fetch_manifest();
+
         private:
             chain::controller* control;
             chainbase::database* db;
+            fc::http_client httpc;
+
+            // timer for manifest update task
+            boost::asio::steady_timer manifest_timer;
+
+            void manifest_fetcher_task();
 
             // register new substitution, starts with on chain contract info zeroed out
             // will get filled on first use
-            void create(const name& account, uint64_t from_block, const std::vector<uint8_t>& s_code);
+            void create(const name& account, uint64_t from_block, const std::vector<uint8_t>& code, bool must_activate);
 
             // update existing substitution to use new code
-            void update(const name& account, uint64_t from_block, const std::vector<uint8_t>& code);
+            void update(const name& account, uint64_t from_block, const std::vector<uint8_t>& code, bool must_activate);
     };
 }
 
