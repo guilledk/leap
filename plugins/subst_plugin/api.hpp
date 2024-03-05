@@ -89,6 +89,7 @@ namespace eosio {
             struct status_result {
                 name account;
                 uint64_t from_block;
+                bool must_activate;
 
                 fc::sha256 original_hash;
                 fc::sha256 substitution_hash;
@@ -111,6 +112,7 @@ namespace eosio {
                 status_result result {
                     meta->account,
                     meta->from_block,
+                    meta->must_activate,
 
                     meta->og_hash(),
                     meta->s_hash(),
@@ -154,7 +156,9 @@ namespace eosio {
                             cd->initdata_size,
                             cd->initdata_prologue_size
                         };
-                        fc::to_variant(occache, *ocvm_status.descriptor);
+                        fc::variant vmoc_desc;
+                        fc::to_variant(occache, vmoc_desc);
+                        ocvm_status.descriptor = vmoc_desc;
 
                         ocvm_status.status = std::string("ready");
 
@@ -179,7 +183,9 @@ namespace eosio {
                     code_obj->vm_type,
                     code_obj->vm_version
                 };
-                fc::to_variant(cobj, *result.code_object);
+                fc::variant cobj_var;
+                fc::to_variant(cobj, cobj_var);
+                result.code_object = cobj_var;
 
                 status_acc_meta_obj ameta {
                     acc_meta->recv_sequence,
@@ -192,7 +198,9 @@ namespace eosio {
                     acc_meta->vm_type,
                     acc_meta->vm_version
                 };
-                fc::to_variant(ameta, *result.account_metadata_object);
+                fc::variant acc_meta_var;
+                fc::to_variant(ameta, acc_meta_var);
+                result.account_metadata_object = acc_meta_var;
 
                 return result;
             }
@@ -225,12 +233,13 @@ namespace eosio {
                 name account;
                 uint32_t from_block;
                 chain::blob code;
+                bool must_activate;
             };
 
             status_result upsert(const upsert_params& params, const fc::time_point& deadline) {
                 std::vector<uint8_t> code(params.code.data.begin(), params.code.data.end());
                 sctx.upsert(
-                    params.account, params.from_block, code);
+                    params.account, params.from_block, code, params.must_activate);
                 return get_account_status(params.account);
             }
 
@@ -275,15 +284,28 @@ namespace eosio {
             status_results remove(const remove_params& params, const fc::time_point& deadline) {
                 status_results results;
 
-                if (params.account) {
+                if (params.account)
                     sctx.remove(*params.account);
-                    results.rows.emplace_back(get_account_status(*params.account));
 
-                } else
-                    for (const name& account : sctx.get_substitutions()) {
+                else
+                    for (const name& account : sctx.get_substitutions())
                         sctx.remove(account);
-                        results.rows.emplace_back(get_account_status(account));
-                    }
+
+                for (const name& account : sctx.get_substitutions())
+                    results.rows.emplace_back(get_account_status(account));
+
+                return results;
+            }
+
+            using fetch_manifest_params = chain_apis::empty;
+
+            status_results fetch_manifest(const fetch_manifest_params& params, const fc::time_point& deadline) {
+                status_results results;
+
+                sctx.fetch_manifest();
+
+                for (const name& account : sctx.get_substitutions())
+                    results.rows.emplace_back(get_account_status(account));
 
                 return results;
             }
@@ -293,7 +315,8 @@ namespace eosio {
 
 FC_REFLECT(
     eosio::subst_apis::status_result,
-    (account)(from_block)(original_hash)(substitution_hash)
+    (account)(from_block)(must_activate)
+    (original_hash)(substitution_hash)
     (account_metadata_object)
     (code_object)
     (eosvmoc_cache_status)
