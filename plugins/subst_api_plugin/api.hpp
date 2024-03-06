@@ -1,6 +1,6 @@
 #pragma once
 
-#include "substitution_context.hpp"
+#include "subst_plugin.hpp"
 
 
 #define CALL_WITH_400(api_name, api_handle, api_namespace, call_name, http_response_code, params_type) \
