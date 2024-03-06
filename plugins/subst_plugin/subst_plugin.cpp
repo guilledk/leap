@@ -28,7 +28,11 @@ namespace eosio {
 
             control = &chain->chain();
             db = &control->mutable_db();
-            subst_ctx = new substitution_context(control, _io);
+            subst_ctx = new substitution_context(
+                control,
+                _io,
+                app_options.at("subst-manifest-interval").as<uint32_t>()
+            );
 
             control->get_wasm_interface().substitute_apply = [&](
                 const chain::digest_type& code_hash,
@@ -183,6 +187,9 @@ namespace eosio {
             "subst-manifest", bpo::value<string>()->default_value(std::string("")),
             "url. load susbtitution information from a remote json file.");
         options(
+            "subst-manifest-interval", bpo::value<uint32_t>()->default_value(300),
+            "Time between manifest re-fetches");
+        options(
             "override-max-tx-time", bpo::value<uint32_t>(),
             "Override on chain max-transaction-time with value.");
     }
@@ -193,40 +200,17 @@ namespace eosio {
 
             my->init(_chain, options);
 
-            // http api setup
-            ilog("setup subst_plugin api...");
-
-            auto* _http_plugin = app().find_plugin<http_plugin>();
-
-            subst_apis subst_api(
-                _http_plugin->get_max_response_time(), *my->subst_ctx);
-
-            // read only
-            _http_plugin->add_api({
-
-                SUBST_CALL(status, 200, http_params_types::possible_no_params)
-
-            }, appbase::exec_queue::read_only);
-
-            // read-write
-            _http_plugin->add_api({
-
-                SUBST_CALL(upsert,         200, http_params_types::params_required),
-                SUBST_CALL(activate,       200, http_params_types::possible_no_params),
-                SUBST_CALL(deactivate,     200, http_params_types::possible_no_params),
-                SUBST_CALL(remove,         200, http_params_types::possible_no_params),
-
-                SUBST_CALL(fetch_manifest, 200, http_params_types::no_params)
-
-            }, appbase::exec_queue::read_write, appbase::priority::highest);
-
         } FC_LOG_AND_RETHROW()
-    }  // subst_plugin::plugin_initialize
+    }
 
     void subst_plugin::plugin_startup() {}
 
     void subst_plugin::plugin_shutdown() {
         delete my->subst_ctx;
+    }
+
+    substitution_context& subst_plugin::context() {
+        return *my->subst_ctx;
     }
 
 }  // namespace eosio
