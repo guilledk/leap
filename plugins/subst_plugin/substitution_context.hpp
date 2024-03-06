@@ -44,7 +44,6 @@ namespace eosio {
     typedef chain::wasm_interface_impl::eosvmoc_tier eosvmoc_tier;
 #endif
 
-
     struct by_account;
     class subst_meta_object : public chainbase::object<chain::subst_meta_object_type, subst_meta_object> {
         OBJECT_CTOR(subst_meta_object, (og_code)(s_code))
@@ -81,12 +80,14 @@ namespace eosio {
     class substitution_context : public std::enable_shared_from_this<substitution_context> {
         public:
             std::optional<fc::url> manifest_url;
-            std::chrono::seconds manifest_fetch_interval = std::chrono::seconds(300);
+            std::chrono::seconds manifest_fetch_interval;
 
             substitution_context(
                 chain::controller* _control,
-                boost::asio::io_service& _io
+                boost::asio::io_service& _io,
+                uint32_t _manifest_refetch_interval
             ) :
+                manifest_fetch_interval(_manifest_refetch_interval),
                 control(_control),
                 db(&_control->mutable_db()),
                 manifest_timer(_io)
@@ -128,15 +129,17 @@ namespace eosio {
 
             void debug_print();
 
+            // reset all nodeos caches related to an account
             void reset_caches(const name& account);
 
 #ifdef EOSIO_EOS_VM_OC_RUNTIME_ENABLED
+            // get a reference to wasm iface eosvmoc_tier optional field
             std::optional<eosvmoc_tier>& get_eosvmoc() {
                 return control->get_wasm_interface().my->eosvmoc;
             }
 #endif
 
-            // manifest
+            // perform immidiate manifest update
             void fetch_manifest();
 
         private:
