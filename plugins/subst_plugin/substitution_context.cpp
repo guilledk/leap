@@ -56,8 +56,9 @@ namespace eosio {
     }
 
 
-    const digest_type substitution_context::get_codeobj_hash(const name& account) {
-        const auto& cobj = get_codeobj(account);
+    const digest_type substitution_context::get_codeobj_hash(const name& account, bool check_result) {
+        const auto& cobj = get_codeobj(account, check_result);
+        if (!cobj && !check_result) return digest_type();
         return digest_type::hash((const char*)cobj->code.data(), cobj->code.size());
     }
 
@@ -206,8 +207,10 @@ namespace eosio {
 
 
     void substitution_context::deactivate(const name& account) {
-        const auto& meta = get_by_account(account);
-        const auto& cobj = get_codeobj(account);
+        const auto& meta = get_by_account(account, false);
+        const auto& cobj = get_codeobj(account, false);
+
+        if (!cobj) return;
 
         const digest_type& cobj_hash = get_codeobj_hash(account);
 
@@ -236,7 +239,10 @@ namespace eosio {
 
 
     void substitution_context::remove(const name& account) {
-        const subst_meta_object* acc = get_by_account(account);
+        const subst_meta_object* acc = get_by_account(account, false);
+
+        if (!acc) return;
+
         db->remove(*acc);
         ilog("removed substitution metadata for ${acc}", ("acc", account));
     }
@@ -312,6 +318,8 @@ namespace eosio {
             wlog("looks like provided url based substitution manifest"
                     "doesn\'t end with \"susbt.json\"... trying anyways...");
 
+        ilog("fetching manifest at ${url}", ("url", target_url));
+        fc::http_client httpc;
         fc::variant manifest = httpc.get_sync_json(target_url);
         auto& manif_obj = manifest.get_object();
 
@@ -347,16 +355,6 @@ namespace eosio {
         } else {
             ilog("manifest found but chain id not present.");
         }
-    }
-
-    void substitution_context::manifest_fetcher_task() {
-        if (!manifest_url) return;
-        ilog("running manifest update");
-        fetch_manifest();
-        manifest_timer.expires_after(manifest_fetch_interval);
-        manifest_timer.async_wait(
-            boost::bind(
-                &substitution_context::manifest_fetcher_task, shared_from_this()));
     }
 
 }  // namespace eosio
