@@ -14,6 +14,10 @@
 #include "substitution_context.hpp"
 
 
+#define DEFAULT_OVERRIDE_TIME 300
+#define DEFAULT_MANIFEST_INTERVAL 300
+
+
 namespace eosio {
 
     using chain::controller;

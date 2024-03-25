@@ -80,23 +80,16 @@ namespace eosio {
     class substitution_context : public std::enable_shared_from_this<substitution_context> {
         public:
             std::optional<fc::url> manifest_url;
-            std::chrono::seconds manifest_fetch_interval;
 
-            substitution_context(
-                chain::controller* _control,
-                boost::asio::io_service& _io,
-                uint32_t _manifest_refetch_interval
-            ) :
-                manifest_fetch_interval(_manifest_refetch_interval),
+            substitution_context(chain::controller* _control) :
                 control(_control),
-                db(&_control->mutable_db()),
-                manifest_timer(_io)
+                db(&_control->mutable_db())
             {}
 
             // nodeos code store getters
             const account_metadata_object* get_account_metadata_object(const name& account, bool check_result = true);
             const code_object*             get_codeobj(const name& account, bool check_result = true);
-            const digest_type              get_codeobj_hash(const name& account);
+            const digest_type              get_codeobj_hash(const name& account, bool check_result = true);
 
             // upsert
             void upsert(std::string info, const std::vector<uint8_t>& code, bool must_activate = true);
@@ -139,18 +132,12 @@ namespace eosio {
             }
 #endif
 
-            // perform immidiate manifest update
+            // perform manifest update
             void fetch_manifest();
 
         private:
             chain::controller* control;
             chainbase::database* db;
-            fc::http_client httpc;
-
-            // timer for manifest update task
-            boost::asio::steady_timer manifest_timer;
-
-            void manifest_fetcher_task();
 
             // register new substitution, starts with on chain contract info zeroed out
             // will get filled on first use

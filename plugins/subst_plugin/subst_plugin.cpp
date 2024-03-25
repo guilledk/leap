@@ -6,11 +6,11 @@ namespace eosio {
 
     class subst_plugin_impl : public std::enable_shared_from_this<subst_plugin_impl> {
         private:
-            boost::asio::io_service& _io;
+            boost::asio::steady_timer manifest_timer;
 
         public:
             subst_plugin_impl(boost::asio::io_service& io)
-            : _io(io)
+            : manifest_timer(io)
             {}
 
         substitution_context* subst_ctx;
@@ -21,18 +21,17 @@ namespace eosio {
 
         bool override_tx_time = false;
         bool should_perform_override = false;
-        uint32_t override_time = 300;
+        uint32_t override_time = DEFAULT_OVERRIDE_TIME;
+        uint32_t manifest_interval = DEFAULT_MANIFEST_INTERVAL;
 
         void init(chain_plugin* chain, const variables_map& options) {
             app_options = options;
 
             control = &chain->chain();
             db = &control->mutable_db();
-            subst_ctx = new substitution_context(
-                control,
-                _io,
-                app_options.at("subst-manifest-interval").as<uint32_t>()
-            );
+            subst_ctx = new substitution_context(control);
+
+            manifest_interval = app_options.at("subst-manifest-interval").as<uint32_t>();
 
             control->get_wasm_interface().substitute_apply = [&](
                 const chain::digest_type& code_hash,
@@ -116,9 +115,29 @@ namespace eosio {
                 );
                 subst_ctx->manifest_url = manifest_url;
                 subst_ctx->fetch_manifest();
+                schedule_manifest_update();
             }
 
             subst_ctx->debug_print();
+        }
+
+        void schedule_manifest_update() {
+            ilog("scheduling manifest update in ${i}", ("i",manifest_interval));
+            manifest_timer.expires_from_now(std::chrono::seconds(manifest_interval));
+            manifest_timer.async_wait(
+                app().executor().wrap(
+                    priority::high,
+                    exec_queue::read_write,
+                    [weak_this = weak_from_this()]( const boost::system::error_code& ec ) {
+                        auto self = weak_this.lock();
+                        if(self && ec != boost::asio::error::operation_aborted) {
+                            ilog("trigger manifest update");
+                            self->subst_ctx->fetch_manifest();
+                            self->schedule_manifest_update();
+                        }
+                    }
+                )
+            );
         }
 
         void pwn_gpo() {
@@ -187,7 +206,7 @@ namespace eosio {
             "subst-manifest", bpo::value<string>()->default_value(std::string("")),
             "url. load susbtitution information from a remote json file.");
         options(
-            "subst-manifest-interval", bpo::value<uint32_t>()->default_value(300),
+            "subst-manifest-interval", bpo::value<uint32_t>()->default_value(DEFAULT_MANIFEST_INTERVAL),
             "Time between manifest re-fetches");
         options(
             "override-max-tx-time", bpo::value<uint32_t>(),
