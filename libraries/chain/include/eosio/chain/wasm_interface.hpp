@@ -86,7 +86,6 @@ namespace eosio { namespace chain {
 
       private:
          vm_oc_enable eosvmoc_tierup;
-         vm_type vm;
    };
 
 } } // eosio::chain
