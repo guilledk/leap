@@ -132,7 +132,9 @@ namespace eosio {
                         auto self = weak_this.lock();
                         if(self && ec != boost::asio::error::operation_aborted) {
                             ilog("trigger manifest update");
-                            self->subst_ctx->fetch_manifest();
+                            try {
+                                 self->subst_ctx->fetch_manifest();
+                            } FC_LOG_AND_DROP();
                             self->schedule_manifest_update();
                         }
                     }
