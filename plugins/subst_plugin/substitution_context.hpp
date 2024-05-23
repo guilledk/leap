@@ -6,6 +6,7 @@
 #include <boost/filesystem.hpp>
 #include <boost/algorithm/string.hpp>
 
+#include <fc/time.hpp>
 #include <fc/io/json.hpp>
 #include <fc/network/url.hpp>
 #include <fc/network/http/http_client.hpp>
@@ -133,7 +134,7 @@ namespace eosio {
 #endif
 
             // perform manifest update
-            void fetch_manifest();
+            void fetch_manifest(fc::microseconds timeout);
 
         private:
             chain::controller* control;
