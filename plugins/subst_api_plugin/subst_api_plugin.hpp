@@ -1,5 +1,6 @@
 #pragma once
 
+#include <fc/time.hpp>
 #include <eosio/http_plugin/http_plugin.hpp>
 
 #include "subst_api_plugin.hpp"
