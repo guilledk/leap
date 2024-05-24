@@ -25,7 +25,7 @@ namespace eosio {
             // read only
             _http_plugin->add_api({
 
-                SUBST_CALL(status, 200, http_params_types::possible_no_params)
+                SUBST_RO_CALL(status, 200, http_params_types::possible_no_params)
 
             }, appbase::exec_queue::read_only);
 
@@ -34,12 +34,12 @@ namespace eosio {
                 wlog("subst-admin-apis enabled, don\'t expose these to ");
                 _http_plugin->add_api({
 
-                    SUBST_CALL(upsert,         200, http_params_types::params_required),
-                    SUBST_CALL(activate,       200, http_params_types::possible_no_params),
-                    SUBST_CALL(deactivate,     200, http_params_types::possible_no_params),
-                    SUBST_CALL(remove,         200, http_params_types::possible_no_params),
+                    SUBST_RW_CALL(upsert,         200, http_params_types::params_required),
+                    SUBST_RW_CALL(activate,       200, http_params_types::possible_no_params),
+                    SUBST_RW_CALL(deactivate,     200, http_params_types::possible_no_params),
+                    SUBST_RW_CALL(remove,         200, http_params_types::possible_no_params),
 
-                    SUBST_CALL(fetch_manifest, 200, http_params_types::no_params)
+                    SUBST_RW_CALL(fetch_manifest, 200, http_params_types::no_params)
 
                 }, appbase::exec_queue::read_write, appbase::priority::highest);
             }

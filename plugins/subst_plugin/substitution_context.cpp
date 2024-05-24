@@ -186,7 +186,7 @@ namespace eosio {
 
 #ifdef EOSIO_EOS_VM_OC_RUNTIME_ENABLED
         // remove eosvmoc code cache if present
-        std::optional<eosvmoc_tier>& eosvmoc = get_eosvmoc();
+        auto& eosvmoc = get_eosvmoc();
 
         if (eosvmoc) {
             eosvmoc->cc.free_code(cobj->code_hash, cobj->vm_version);
@@ -336,7 +336,7 @@ namespace eosio {
         auto it = manif_obj.find(chain_id);
         if (it != manif_obj.end()) {
             for (auto subst_entry : (*it).value().get_object()) {
-                bpath url_path = *(target_url.path());
+                std::filesystem::path url_path = *(target_url.path());
                 auto wasm_url_path = url_path.remove_filename() / chain_id / subst_entry.value().get_string();
 
                 auto wasm_url = fc::url(

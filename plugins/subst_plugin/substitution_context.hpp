@@ -22,9 +22,6 @@
 #endif
 
 
-typedef boost::filesystem::path bpath;
-
-
 namespace http = boost::beast::http;
 
 
@@ -41,8 +38,6 @@ namespace eosio {
 #ifdef EOSIO_EOS_VM_OC_RUNTIME_ENABLED
     using chain::eosvmoc::code_descriptor;
     using chain::eosvmoc::code_cache_async;
-
-    typedef chain::wasm_interface_impl::eosvmoc_tier eosvmoc_tier;
 #endif
 
     struct by_account;
@@ -127,8 +122,8 @@ namespace eosio {
             void reset_caches(const name& account);
 
 #ifdef EOSIO_EOS_VM_OC_RUNTIME_ENABLED
-            // get a reference to wasm iface eosvmoc_tier optional field
-            std::optional<eosvmoc_tier>& get_eosvmoc() {
+            // get ptr to wasm iface eosvmoc_tier
+            std::unique_ptr<chain::wasm_interface_impl::eosvmoc_tier>& get_eosvmoc() {
                 return control->get_wasm_interface().my->eosvmoc;
             }
 #endif
