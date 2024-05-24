@@ -3,22 +3,25 @@
 #include "subst_plugin.hpp"
 
 
-#define CALL_WITH_400(api_name, api_handle, api_namespace, call_name, http_response_code, params_type) \
+#define CALL_WITH_400(api_name, category, api_handle, api_namespace, call_name, http_response_code, params_type) \
 {std::string("/v1/" #api_name "/" #call_name), \
+   api_category::category,\
    [api_handle](string&&, string&& body, url_response_callback&& cb) mutable { \
           auto deadline = api_handle.start(); \
           try { \
              auto params = parse_params<api_namespace::call_name ## _params, params_type>(body);\
-             FC_CHECK_DEADLINE(deadline);\
              fc::variant result( api_handle.call_name( std::move(params), deadline ) ); \
-             cb(http_response_code, deadline, std::move(result)); \
+             cb(http_response_code, std::move(result)); \
           } catch (...) { \
              http_plugin::handle_exception(#api_name, #call_name, body, cb); \
           } \
        }}
 
-#define SUBST_CALL(call_name, http_response_code, params_type) \
-    CALL_WITH_400(subst, subst_api, eosio::subst_apis, call_name, http_response_code, params_type)
+#define SUBST_RO_CALL(call_name, http_response_code, params_type) \
+    CALL_WITH_400(subst, chain_ro, subst_api, eosio::subst_apis, call_name, http_response_code, params_type)
+
+#define SUBST_RW_CALL(call_name, http_response_code, params_type) \
+    CALL_WITH_400(subst, chain_rw, subst_api, eosio::subst_apis, call_name, http_response_code, params_type)
 
 
 namespace eosio {
@@ -131,12 +134,13 @@ namespace eosio {
 
 #ifdef EOSIO_EOS_VM_OC_RUNTIME_ENABLED
                 // if oc mode is enabled fetch code descriptor
-                std::optional<eosvmoc_tier>& eosvmoc = sctx.get_eosvmoc();
+                auto& eosvmoc = sctx.get_eosvmoc();
                 if (eosvmoc && meta->og_hash() != digest_type()) {
                     status_eosvmoc_cache ocvm_status;
 
                     chain::eosvmoc::code_cache_base::get_cd_failure failure = chain::eosvmoc::code_cache_base::get_cd_failure::temporary;
                     const code_descriptor* cd = eosvmoc->cc.get_descriptor_for_code(
+                        true,
                         code_obj->code_hash,
                         code_obj->vm_version,
                         false,
