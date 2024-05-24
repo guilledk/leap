@@ -302,7 +302,7 @@ namespace eosio {
             status_results fetch_manifest(const fetch_manifest_params& params, const fc::time_point& deadline) {
                 status_results results;
 
-                sctx.fetch_manifest();
+                sctx.fetch_manifest(fc::seconds(DEFAULT_MANIFEST_TIMEOUT));
 
                 for (const name& account : sctx.get_substitutions())
                     results.rows.emplace_back(get_account_status(account));

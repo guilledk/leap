@@ -307,7 +307,7 @@ namespace eosio {
     }
 
 
-    void substitution_context::fetch_manifest() {
+    void substitution_context::fetch_manifest(fc::microseconds timeout) {
         EOS_ASSERT(manifest_url, fc::assert_exception, "Tried to fetch manifest but no source configured");
 
         fc::url target_url = *manifest_url;
@@ -320,7 +320,7 @@ namespace eosio {
 
         ilog("fetching manifest at ${url}", ("url", target_url));
         fc::http_client httpc;
-        fc::variant manifest = httpc.get_sync_json(target_url);
+        fc::variant manifest = httpc.get_sync_json(target_url, fc::time_point::now() + timeout);
         auto& manif_obj = manifest.get_object();
 
         ilog("got manifest from ${url}", ("url", target_url));
@@ -346,7 +346,7 @@ namespace eosio {
                 );
 
                 ilog("downloading wasm from ${wurl}...", ("wurl", wasm_url));
-                std::vector<uint8_t> new_code = httpc.get_sync_raw(wasm_url);
+                std::vector<uint8_t> new_code = httpc.get_sync_raw(wasm_url, fc::time_point::now() + timeout);
                 ilog("done.");
 
                 std::string subst_info = subst_entry.key();

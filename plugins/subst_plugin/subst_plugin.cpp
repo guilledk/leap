@@ -23,6 +23,7 @@ namespace eosio {
         bool should_perform_override = false;
         uint32_t override_time = DEFAULT_OVERRIDE_TIME;
         uint32_t manifest_interval = DEFAULT_MANIFEST_INTERVAL;
+        uint32_t manifest_timeout = DEFAULT_MANIFEST_TIMEOUT;
 
         void init(chain_plugin* chain, const variables_map& options) {
             app_options = options;
@@ -32,6 +33,7 @@ namespace eosio {
             subst_ctx = new substitution_context(control);
 
             manifest_interval = app_options.at("subst-manifest-interval").as<uint32_t>();
+            manifest_timeout = app_options.at("subst-manifest-timeout").as<uint32_t>();
 
             control->get_wasm_interface().substitute_apply = [&](
                 const chain::digest_type& code_hash,
@@ -114,7 +116,7 @@ namespace eosio {
                     "Only http protocol supported for now."
                 );
                 subst_ctx->manifest_url = manifest_url;
-                subst_ctx->fetch_manifest();
+                subst_ctx->fetch_manifest(fc::seconds(manifest_timeout));
                 schedule_manifest_update();
             }
 
@@ -132,7 +134,9 @@ namespace eosio {
                         auto self = weak_this.lock();
                         if(self && ec != boost::asio::error::operation_aborted) {
                             ilog("trigger manifest update");
-                            self->subst_ctx->fetch_manifest();
+                            try {
+                                 self->subst_ctx->fetch_manifest(fc::seconds(self->manifest_timeout));
+                            } FC_LOG_AND_DROP();
                             self->schedule_manifest_update();
                         }
                     }
@@ -208,6 +212,9 @@ namespace eosio {
         options(
             "subst-manifest-interval", bpo::value<uint32_t>()->default_value(DEFAULT_MANIFEST_INTERVAL),
             "Time between manifest re-fetches");
+        options(
+            "subst-manifest-timeout", bpo::value<uint32_t>()->default_value(DEFAULT_MANIFEST_TIMEOUT),
+            "Timeout for manifest http calls");
         options(
             "override-max-tx-time", bpo::value<uint32_t>(),
             "Override on chain max-transaction-time with value.");
